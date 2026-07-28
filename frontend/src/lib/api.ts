@@ -1,0 +1,126 @@
+const API_BASE = "http://localhost:8000";
+
+export interface LiveHost {
+  hostname: string;
+  sources: string[];
+  status_code: number | null;
+  title: string | null;
+  server_header: string | null;
+  resolved_ips: string[];
+  reachable: boolean;
+}
+
+export interface ProviderConfig {
+  name: string;
+  enabled: boolean;
+  extra: Record<string, string>;
+}
+
+export async function runRecon(domain: string): Promise<{ domain: string; hosts: LiveHost[] }> {
+  const res = await fetch(`${API_BASE}/api/recon/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domain, probe_liveness: true }),
+  });
+  if (!res.ok) throw new Error(`recon failed: ${res.status}`);
+  return res.json();
+}
+
+export async function listProviders(): Promise<ProviderConfig[]> {
+  const res = await fetch(`${API_BASE}/api/recon/providers`);
+  return res.json();
+}
+
+export async function upsertProvider(
+  name: string,
+  enabled: boolean,
+  api_key: string,
+  cookies: Record<string, string> = {},
+  extra: Record<string, string> = {}
+): Promise<void> {
+  await fetch(`${API_BASE}/api/recon/providers`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, enabled, api_key, cookies, extra }),
+  });
+}
+
+export async function startCrawl(
+  startUrl: string
+): Promise<{ session_id: string; novnc_url: string }> {
+  const res = await fetch(`${API_BASE}/api/crawl/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ start_url: startUrl }),
+  });
+  if (!res.ok) throw new Error(`start crawl failed: ${res.status}`);
+  return res.json();
+}
+
+export async function stopCrawl(sessionId: string): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/stop`, { method: "POST" });
+}
+
+export interface DiscoveredEndpoint {
+  method: string;
+  path_template: string;
+  host: string;
+  scheme: string;
+  query_params: string[];
+  path_params: string[];
+  status_codes_seen: number[];
+  hit_count: number;
+}
+
+export async function getEndpoints(sessionId: string): Promise<DiscoveredEndpoint[]> {
+  const res = await fetch(`${API_BASE}/api/crawl/${sessionId}/endpoints`);
+  const data = await res.json();
+  return data.endpoints ?? [];
+}
+
+export async function excludeHost(sessionId: string, host: string): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/exclude-host`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host }),
+  });
+}
+
+export async function excludeEndpoint(
+  sessionId: string,
+  method: string,
+  host: string,
+  pathTemplate: string
+): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/exclude-endpoint`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method, host, path_template: pathTemplate }),
+  });
+}
+
+export async function exportCrawl(
+  sessionId: string,
+  groupByHost: boolean = false
+): Promise<{
+  openapi: object;
+  postman: object;
+  endpoint_count: number;
+}> {
+  const res = await fetch(`${API_BASE}/api/crawl/${sessionId}/export?group_by_host=${groupByHost}`);
+  return res.json();
+}
+
+export function crawlStreamUrl(sessionId: string): string {
+  return `${API_BASE.replace("http", "ws")}/api/crawl/${sessionId}/stream`;
+}
+
+export function downloadJson(data: object, filename: string): void {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}

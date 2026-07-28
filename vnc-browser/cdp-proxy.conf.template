@@ -1,0 +1,29 @@
+# Chrome's DevTools HTTP server only trusts requests whose Host header
+# matches its --remote-debugging-address (127.0.0.1 here). Clients outside
+# the container send Host: localhost:<port> / 127.0.0.1:<port>, which Chrome
+# resets as a DNS-rebinding protection. This proxy sits in between and
+# rewrites the Host header to what Chrome actually trusts, so the connection
+# looks purely local from Chrome's point of view either way.
+server {
+    listen 9223;
+
+    # Chrome's /json* endpoints embed its own bind address in
+    # webSocketDebuggerUrl / devtoolsFrontendUrl (e.g. ws://127.0.0.1:9222/...).
+    # Clients (Playwright) connect directly to whatever URL is embedded there,
+    # bypassing this proxy unless we rewrite it to the port Docker actually
+    # published on the host for THIS container (CDP_HOST_PORT, injected at
+    # container startup — see start-nginx.sh).
+    sub_filter_types application/json;
+    sub_filter '127.0.0.1:9222' '127.0.0.1:${CDP_HOST_PORT}';
+    sub_filter_once off;
+
+    location / {
+        proxy_pass http://127.0.0.1:9222;
+        proxy_set_header Host 127.0.0.1:9222;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+    }
+}

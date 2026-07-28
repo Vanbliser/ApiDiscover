@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><title>Fixture App</title></head>
+<body>
+  <h1>Fixture App</h1>
+  <button id="load-users">Load users</button>
+  <a href="/page2.html" id="go-page2">Page 2</a>
+  <div id="output"></div>
+  <script>
+    document.getElementById("load-users").addEventListener("click", async () => {
+      const res = await fetch("/api/users?limit=5");
+      const data = await res.json();
+      document.getElementById("output").textContent = JSON.stringify(data);
+    });
+  </script>
+</body>
+</html>

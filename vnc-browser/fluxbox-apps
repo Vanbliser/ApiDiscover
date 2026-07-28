@@ -1,0 +1,5 @@
+[app] (name=chromium-browser) (class=Chromium-browser)
+  [Deco]	{NONE}
+  [Maximized]	{yes}
+  [Position]	(TOPLEFT)	{0 0}
+[end]
