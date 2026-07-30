@@ -103,6 +103,16 @@ input {
   flex: 1;
 }
 
+.domain-input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  font-family: inherit;
+  flex: 1;
+  resize: vertical;
+}
+
 button {
   padding: 8px 14px;
   border: 1px solid var(--accent);
@@ -128,10 +138,24 @@ button:disabled {
   font-size: 13px;
 }
 
+.results-table-scroll {
+  max-height: 480px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 .results-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+}
+
+.results-table-scroll .results-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--bg, #fff);
+  z-index: 1;
 }
 
 .results-table th,
@@ -160,34 +184,63 @@ button:disabled {
   background: #fee2e2;
 }
 
-.provider-config {
-  border-bottom: 1px solid var(--border);
-  padding: 8px 0;
+.source-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
-.provider-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.source-tag.source-observed {
+  background: #e5e7eb;
+  color: #374151;
 }
 
-.provider-extra-fields {
-  display: flex;
-  gap: 10px;
-  margin: 8px 0 4px 0;
-  padding-left: 28px;
+.source-tag.source-js-scan {
+  background: #fef3c7;
+  color: #92400e;
 }
 
-.provider-extra-fields input {
-  flex: 1;
+.provider-grid {
+  display: grid;
+  grid-template-columns: auto minmax(160px, auto) 1fr auto;
+  column-gap: 16px;
+  row-gap: 10px;
+  align-items: start;
 }
 
-.provider-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 260px;
+.provider-grid-row {
+  display: contents;
+}
+
+.provider-grid-row > input[type="checkbox"] {
+  margin-top: 9px;
+}
+
+.provider-grid-row > .provider-name {
   font-size: 14px;
+  padding-top: 8px;
+  white-space: nowrap;
+}
+
+.provider-grid-row > .provider-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.provider-grid-row > .provider-fields input {
+  width: 100%;
+}
+
+.provider-grid-row > button {
+  margin-top: 1px;
+}
+
+.provider-grid-row:not(:last-child) > * {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
 }
 
 .browser-viewer {

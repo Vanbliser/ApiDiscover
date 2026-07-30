@@ -1,4 +1,7 @@
-const API_BASE = "http://localhost:8000";
+// Derive the backend host from wherever this page was actually loaded from
+// (localhost vs 127.0.0.1 vs a LAN IP are all distinct browser origins) —
+// hardcoding "localhost" here broke access from any other loopback form.
+const API_BASE = `${window.location.protocol}//${window.location.hostname}:8000`;
 
 export interface LiveHost {
   hostname: string;
@@ -70,12 +73,19 @@ export interface DiscoveredEndpoint {
   path_params: string[];
   status_codes_seen: number[];
   hit_count: number;
+  discovery_source: "observed" | "js_scan_verified";
 }
 
 export async function getEndpoints(sessionId: string): Promise<DiscoveredEndpoint[]> {
   const res = await fetch(`${API_BASE}/api/crawl/${sessionId}/endpoints`);
   const data = await res.json();
   return data.endpoints ?? [];
+}
+
+export async function scanJs(sessionId: string): Promise<{ found_count: number }> {
+  const res = await fetch(`${API_BASE}/api/crawl/${sessionId}/scan-js`, { method: "POST" });
+  if (!res.ok) throw new Error(`JS scan failed: ${res.status}`);
+  return res.json();
 }
 
 export async function excludeHost(sessionId: string, host: string): Promise<void> {

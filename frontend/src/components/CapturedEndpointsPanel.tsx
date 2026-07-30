@@ -6,6 +6,7 @@ import {
   excludeEndpoint,
   exportCrawl,
   downloadJson,
+  scanJs,
 } from "../lib/api";
 
 interface Props {
@@ -18,6 +19,9 @@ export function CapturedEndpointsPanel({ sessionId, refreshSignal, onClose }: Pr
   const [endpoints, setEndpoints] = useState<DiscoveredEndpoint[]>([]);
   const [groupByHost, setGroupByHost] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [lastScanFound, setLastScanFound] = useState<number | null>(null);
 
   async function refresh() {
     setEndpoints(await getEndpoints(sessionId));
@@ -35,6 +39,21 @@ export function CapturedEndpointsPanel({ sessionId, refreshSignal, onClose }: Pr
   async function handleExcludeHost(host: string) {
     await excludeHost(sessionId, host);
     await refresh();
+  }
+
+  async function handleScanJs() {
+    setScanning(true);
+    setScanError(null);
+    setLastScanFound(null);
+    try {
+      const result = await scanJs(sessionId);
+      setLastScanFound(result.found_count);
+      await refresh();
+    } catch (e) {
+      setScanError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setScanning(false);
+    }
   }
 
   async function handleExport() {
@@ -62,6 +81,20 @@ export function CapturedEndpointsPanel({ sessionId, refreshSignal, onClose }: Pr
         exclude an entire base URL. Exclusions apply for the rest of this crawl session.
       </p>
 
+      <div className="row">
+        <button onClick={handleScanJs} disabled={scanning}>
+          {scanning ? "Scanning JS files..." : "Scan JS files for endpoints"}
+        </button>
+        {lastScanFound !== null && (
+          <span className="hint">
+            {lastScanFound > 0
+              ? `Found and verified ${lastScanFound} additional endpoint(s) referenced in JS.`
+              : "No additional live endpoints found in JS."}
+          </span>
+        )}
+        {scanError && <span className="error">{scanError}</span>}
+      </div>
+
       {hosts.length > 0 && (
         <div className="host-exclude-row">
           {hosts.map((host) => (
@@ -80,6 +113,7 @@ export function CapturedEndpointsPanel({ sessionId, refreshSignal, onClose }: Pr
             <th>Path</th>
             <th>Hits</th>
             <th>Status codes</th>
+            <th>Source</th>
             <th></th>
           </tr>
         </thead>
@@ -91,6 +125,15 @@ export function CapturedEndpointsPanel({ sessionId, refreshSignal, onClose }: Pr
               <td>{ep.path_template}</td>
               <td>{ep.hit_count}</td>
               <td>{ep.status_codes_seen.join(", ")}</td>
+              <td>
+                {ep.discovery_source === "js_scan_verified" ? (
+                  <span className="source-tag source-js-scan" title="Found as a string literal in JS source, confirmed with a live request — never organically triggered by clicking through the app">
+                    found in JS
+                  </span>
+                ) : (
+                  <span className="source-tag source-observed">observed</span>
+                )}
+              </td>
               <td>
                 <button onClick={() => handleExcludeEndpoint(ep)}>Exclude</button>
               </td>
