@@ -1,11 +1,10 @@
-import { useState } from "react";
-import { upsertProvider } from "../lib/api";
+import { useEffect, useState } from "react";
+import { listProviders, upsertProvider, type ProviderConfig } from "../lib/api";
 
 interface ExtraField {
   key: string;
   label: string;
   isCookie?: boolean;
-  secret?: boolean;
 }
 
 interface ProviderDef {
@@ -17,6 +16,8 @@ interface ProviderDef {
 }
 
 const PROVIDERS: ProviderDef[] = [
+  { name: "crt_sh", label: "crt.sh (passive, no key)", hasApiKey: false },
+  { name: "dns_bruteforce", label: "DNS brute-force (active, no key)", hasApiKey: false },
   { name: "shodan", label: "Shodan", hasApiKey: true },
   { name: "censys", label: "Censys", hasApiKey: true },
   { name: "securitytrails", label: "SecurityTrails", hasApiKey: true },
@@ -28,85 +29,148 @@ const PROVIDERS: ProviderDef[] = [
     apiKeyLabel: "Token",
     extraFields: [
       { key: "client_id", label: "Client ID" },
-      { key: "api_host", label: "API host (optional, default us1.api.wallarm.com)" },
-      { key: "wsess", label: "wsess cookie", isCookie: true, secret: true },
+      { key: "api_host", label: "API host (default us1.api.wallarm.com)" },
+      { key: "wsess", label: "wsess cookie", isCookie: true },
     ],
   },
-  { name: "dns_bruteforce", label: "DNS brute-force (active, no key)", hasApiKey: false },
 ];
 
-export function SettingsPanel() {
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
-  const [extraValues, setExtraValues] = useState<Record<string, Record<string, string>>>({});
-  const [enabled, setEnabled] = useState<Record<string, boolean>>({});
-  const [saved, setSaved] = useState<string | null>(null);
+interface FormState {
+  enabled: boolean;
+  apiKey: string;
+  extra: Record<string, string>;
+  cookies: Record<string, string>;
+}
 
-  function setExtraField(providerName: string, key: string, value: string) {
-    setExtraValues((s) => ({
-      ...s,
-      [providerName]: { ...(s[providerName] ?? {}), [key]: value },
-    }));
+function emptyForm(provider: ProviderDef): FormState {
+  return {
+    enabled: !provider.hasApiKey,
+    apiKey: "",
+    extra: {},
+    cookies: {},
+  };
+}
+
+function formFromConfig(config: ProviderConfig): FormState {
+  return {
+    enabled: config.enabled,
+    apiKey: config.api_key ?? "",
+    extra: { ...config.extra },
+    cookies: { ...config.cookies },
+  };
+}
+
+export function SettingsPanel() {
+  const [forms, setForms] = useState<Record<string, FormState>>({});
+  const [savedFlash, setSavedFlash] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  async function loadConfig() {
+    setLoadError(null);
+    try {
+      const configs = await listProviders();
+      const byName: Record<string, ProviderConfig> = {};
+      for (const c of configs) byName[c.name] = c;
+
+      setForms(
+        Object.fromEntries(
+          PROVIDERS.map((p) => [p.name, byName[p.name] ? formFromConfig(byName[p.name]) : emptyForm(p)])
+        )
+      );
+      setLoaded(true);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  useEffect(() => {
+    loadConfig();
+  }, []);
+
+  function updateForm(name: string, patch: Partial<FormState>) {
+    setForms((s) => ({ ...s, [name]: { ...s[name], ...patch } }));
+  }
+
+  function updateExtraField(name: string, key: string, value: string) {
+    setForms((s) => ({ ...s, [name]: { ...s[name], extra: { ...s[name].extra, [key]: value } } }));
+  }
+
+  function updateCookieField(name: string, key: string, value: string) {
+    setForms((s) => ({ ...s, [name]: { ...s[name], cookies: { ...s[name].cookies, [key]: value } } }));
   }
 
   async function handleSave(provider: ProviderDef) {
-    const fields = extraValues[provider.name] ?? {};
-    const cookies: Record<string, string> = {};
-    const extra: Record<string, string> = {};
+    const form = forms[provider.name];
+    await upsertProvider(provider.name, form.enabled, form.apiKey, form.cookies, form.extra);
+    setSavedFlash(provider.name);
+    setTimeout(() => setSavedFlash(null), 1500);
+  }
 
-    for (const field of provider.extraFields ?? []) {
-      const value = fields[field.key] ?? "";
-      if (field.isCookie) cookies[field.key] = value;
-      else extra[field.key] = value;
-    }
-
-    await upsertProvider(provider.name, enabled[provider.name] ?? true, apiKeys[provider.name] ?? "", cookies, extra);
-    setSaved(provider.name);
-    setTimeout(() => setSaved(null), 1500);
+  if (!loaded) {
+    return (
+      <div className="panel">
+        <h2>Recon Provider Settings</h2>
+        {loadError ? (
+          <>
+            <p className="error">Failed to load settings: {loadError}</p>
+            <button onClick={loadConfig}>Retry</button>
+          </>
+        ) : (
+          <p className="hint">Loading saved settings...</p>
+        )}
+      </div>
+    );
   }
 
   return (
     <div className="panel">
       <h2>Recon Provider Settings</h2>
       <p className="hint">
-        API keys and cookies are encrypted at rest. Providers without required credentials set are
-        skipped during recon runs.
+        Values are encrypted at rest but shown here in plain text for convenience, since this runs
+        locally. Settings persist across navigation and are applied the next time you run recon.
       </p>
-      {PROVIDERS.map((p) => (
-        <div className="provider-config" key={p.name}>
-          <div className="provider-row">
-            <label className="provider-toggle">
+
+      <div className="provider-grid">
+        {PROVIDERS.map((p) => {
+          const form = forms[p.name];
+          if (!form) return null;
+          return (
+            <div className="provider-grid-row" key={p.name}>
               <input
                 type="checkbox"
-                checked={enabled[p.name] ?? true}
-                onChange={(e) => setEnabled((s) => ({ ...s, [p.name]: e.target.checked }))}
+                checked={form.enabled}
+                onChange={(e) => updateForm(p.name, { enabled: e.target.checked })}
               />
-              {p.label}
-            </label>
-            {p.hasApiKey && (
-              <input
-                type="password"
-                placeholder={p.apiKeyLabel ?? "API key"}
-                value={apiKeys[p.name] ?? ""}
-                onChange={(e) => setApiKeys((s) => ({ ...s, [p.name]: e.target.value }))}
-              />
-            )}
-            <button onClick={() => handleSave(p)}>{saved === p.name ? "Saved" : "Save"}</button>
-          </div>
-          {p.extraFields && p.extraFields.length > 0 && (
-            <div className="provider-extra-fields">
-              {p.extraFields.map((field) => (
-                <input
-                  key={field.key}
-                  type={field.secret ? "password" : "text"}
-                  placeholder={field.label}
-                  value={extraValues[p.name]?.[field.key] ?? ""}
-                  onChange={(e) => setExtraField(p.name, field.key, e.target.value)}
-                />
-              ))}
+              <span className="provider-name">{p.label}</span>
+              <div className="provider-fields">
+                {p.hasApiKey && (
+                  <input
+                    type="text"
+                    placeholder={p.apiKeyLabel ?? "API key"}
+                    value={form.apiKey}
+                    onChange={(e) => updateForm(p.name, { apiKey: e.target.value })}
+                  />
+                )}
+                {p.extraFields?.map((field) => (
+                  <input
+                    key={field.key}
+                    type="text"
+                    placeholder={field.label}
+                    value={(field.isCookie ? form.cookies[field.key] : form.extra[field.key]) ?? ""}
+                    onChange={(e) =>
+                      field.isCookie
+                        ? updateCookieField(p.name, field.key, e.target.value)
+                        : updateExtraField(p.name, field.key, e.target.value)
+                    }
+                  />
+                ))}
+              </div>
+              <button onClick={() => handleSave(p)}>{savedFlash === p.name ? "Saved" : "Save"}</button>
             </div>
-          )}
-        </div>
-      ))}
+          );
+        })}
+      </div>
     </div>
   );
 }
