@@ -100,7 +100,7 @@ BACKEND_PID=$!
 # --- Start frontend ---
 cd "$FRONTEND_DIR"
 echo "Starting frontend on http://localhost:5173 ..."
-npm run dev -- --port 5173 > "$LOG_DIR/frontend.log" 2>&1 &
+npm run dev -- --host 0.0.0.0 --port 5173 > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
 sleep 2
