@@ -25,13 +25,15 @@ function App() {
       </header>
 
       <main>
-        {view === "home" && (
-          <>
-            <ReconPanel onSelectTarget={setCrawlTarget} />
-            <AppCrawlPanel initialUrl={crawlTarget} />
-          </>
-        )}
-        {view === "settings" && <SettingsPanel />}
+        {/* Both views stay mounted so switching to Settings and back doesn't
+            tear down the recon WebSocket, in-flight crawl, or browser viewer. */}
+        <div style={{ display: view === "home" ? "block" : "none" }}>
+          <ReconPanel onSelectTarget={setCrawlTarget} />
+          <AppCrawlPanel initialUrl={crawlTarget} />
+        </div>
+        <div style={{ display: view === "settings" ? "block" : "none" }}>
+          <SettingsPanel />
+        </div>
       </main>
     </div>
   );
