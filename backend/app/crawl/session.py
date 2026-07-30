@@ -9,6 +9,7 @@ from playwright.async_api import Browser, BrowserContext, Page, Playwright, asyn
 
 from app.core.models import CapturedRequest, CrawlerStatus
 from app.crawl.container import VncBrowserContainer
+from app.crawl.js_scan import JsEndpointScanner
 from app.export.normalize import templatize_path
 
 
@@ -128,6 +129,31 @@ class CrawlSession:
 
     def set_capture_handler(self, handler: Callable[[CapturedRequest], None]) -> None:
         self._on_capture = handler
+
+    async def run_js_scan(self) -> list[CapturedRequest]:
+        """
+        On-demand pass: fetch JS bundles referenced by the current page (plus
+        chunks they reference in turn), extract candidate endpoint paths, and
+        verify each with a real request through the same authenticated
+        browser context. Results are appended to `captured` (tagged
+        resource_type="js_scan_verified") and streamed via the capture
+        handler like any other capture, but excluded hosts/endpoints are
+        respected — a candidate matching an active exclusion is dropped
+        rather than resurfacing it.
+        """
+        scanner = JsEndpointScanner(self.page)
+        results = await scanner.scan()
+
+        kept: list[CapturedRequest] = []
+        for cap in results:
+            if self._is_excluded(cap.method, cap.url):
+                continue
+            self.captured.append(cap)
+            kept.append(cap)
+            if self._on_capture:
+                self._on_capture(cap)
+
+        return kept
 
     async def export_storage_state(self) -> dict:
         assert self._context is not None

@@ -50,6 +50,11 @@ class CrawlEndpoint(BaseModel):
     example_request: CapturedRequest | None = None
     status_codes_seen: list[int] = Field(default_factory=list)
     hit_count: int = 1
+    # "observed": seen during real click-through traffic.
+    # "js_scan_verified": found as a string literal in JS source, then
+    # confirmed live via an actual verification request (see js_scan.py) —
+    # never organically triggered by the crawler, so surfaced distinctly.
+    discovery_source: str = "observed"
 
 
 class CrawlerStatus(str, Enum):

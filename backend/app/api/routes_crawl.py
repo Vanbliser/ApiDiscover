@@ -66,6 +66,22 @@ async def exclude_endpoint(session_id: str, req: ExcludeEndpointRequest):
     return {"status": "ok"}
 
 
+@router.post("/{session_id}/scan-js")
+async def scan_js(session_id: str):
+    """
+    On-demand: fetch JS bundles referenced by the current page (and chunks
+    they reference), extract candidate endpoint paths, and verify each with
+    a real request. Can take a while depending on how many scripts/candidates
+    are found — prefer the WebSocket "scan_js" control message if you want
+    a completion event instead of waiting on this request.
+    """
+    session = get_session(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    found = await session.run_js_scan()
+    return {"found_count": len(found)}
+
+
 @router.get("/{session_id}/export")
 async def export_results(session_id: str, group_by_host: bool = False):
     session = get_session(session_id)
@@ -149,3 +165,12 @@ async def _handle_control_message(session, session_id: str, msg: dict, websocket
         walker = _walkers.pop(session_id, None)
         if walker:
             walker.stop()
+    elif msg_type == "scan_js":
+        async def do_scan() -> None:
+            try:
+                found = await session.run_js_scan()
+                await websocket.send_json({"type": "js_scan_done", "found_count": len(found)})
+            except Exception as e:
+                await websocket.send_json({"type": "js_scan_error", "message": str(e)})
+
+        asyncio.create_task(do_scan())

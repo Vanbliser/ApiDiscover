@@ -35,16 +35,28 @@ def templatize_path(path: str) -> tuple[str, list[str]]:
     return "/".join(templated), path_params
 
 
+RESOURCE_TYPE_TO_SOURCE = {
+    "xhr": "observed",
+    "fetch": "observed",
+    "js_scan_verified": "js_scan_verified",
+}
+
+
 def normalize_captures(captures: list[CapturedRequest]) -> list[CrawlEndpoint]:
     """
     Dedupe and normalize raw captured requests into endpoint entries:
     - group by (method, host, templated path)
     - collect query params and status codes seen across repeats
+    - an endpoint that's ever been organically observed (xhr/fetch) keeps
+      discovery_source="observed" even if a JS-scan verification request for
+      the same endpoint is processed too — observed traffic is the stronger
+      signal and shouldn't be downgraded by a later/earlier scan result.
     """
     by_key: dict[tuple[str, str, str], CrawlEndpoint] = {}
 
     for cap in captures:
-        if cap.resource_type not in ("xhr", "fetch"):
+        source = RESOURCE_TYPE_TO_SOURCE.get(cap.resource_type or "")
+        if source is None:
             continue
 
         parts = urlsplit(cap.url)
@@ -65,11 +77,14 @@ def normalize_captures(captures: list[CapturedRequest]) -> list[CrawlEndpoint]:
                 example_request=cap,
                 status_codes_seen=[cap.status_code] if cap.status_code is not None else [],
                 hit_count=1,
+                discovery_source=source,
             )
         else:
             existing.hit_count += 1
             existing.query_params = sorted(set(existing.query_params) | set(query_params))
             if cap.status_code is not None and cap.status_code not in existing.status_codes_seen:
                 existing.status_codes_seen.append(cap.status_code)
+            if source == "observed":
+                existing.discovery_source = "observed"
 
     return sorted(by_key.values(), key=lambda e: (e.host, e.path_template, e.method))
