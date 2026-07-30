@@ -57,13 +57,15 @@ Open **http://localhost:5173** once it prints that the servers are up.
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Frontend  (React + TypeScript, Vite)  —  http://localhost:5173      │
 │                                                                        │
-│   Home                                    Settings                    │
+│   Home (always mounted)                   Settings (always mounted)   │
 │   ┌─────────────┐  ┌─────────────────┐   ┌──────────────────────┐    │
 │   │ Recon Panel │  │ App Crawl Panel │   │ Recon provider config │    │
-│   │             │  │  - noVNC iframe │   │ (Shodan/Censys/...)   │    │
-│   │             │  │  - live capture │   └──────────────────────┘    │
-│   │             │  │    review panel │                               │
+│   │ - live       │  │  - noVNC iframe │   │ (Shodan/Censys/...)   │    │
+│   │   streaming  │  │  - live capture │   └──────────────────────┘    │
+│   │ - CSV export │  │    review panel │                               │
 │   └─────────────┘  └─────────────────┘                               │
+│   Both views stay mounted (CSS-hidden, not unmounted) so switching   │
+│   tabs never resets an in-progress recon run or crawl session.       │
 └───────────────────────────┬────────────────────────────────────────┘
                              │ REST + WebSocket
 ┌───────────────────────────┴────────────────────────────────────────┐
@@ -162,6 +164,10 @@ cd frontend
 npm install    # first time only
 npm run dev    # serves on http://localhost:5173
 ```
+OR
+```bash
+npm run dev -- --host 0.0.0.0 
+```
 
 **VNC browser image** (built once, reused by every crawl session — the
 backend runs `docker run` against it per session, you don't run it directly
@@ -209,15 +215,38 @@ status, page title, `Server` header):
 | Censys | Third-party API | Requires API key |
 | SecurityTrails | Third-party API | Requires API key |
 | VirusTotal | Third-party API | Requires API key |
-| Wallarm | Third-party API | Requires token + client ID + `wsess` cookie; paginated |
+| Wallarm | Third-party API, **account-wide** | Requires token + client ID + `wsess` cookie; paginated |
+
+You can enter **multiple domains** at once (comma or newline separated) — each
+domain-scoped provider runs once per domain. Wallarm is different: its API has
+no domain filter and always returns the whole account's attack surface, so it
+runs exactly **once per recon run** regardless of how many domains you enter
+(or even zero domains, if you only want Wallarm's results). This is a general
+`account_wide` flag on the provider interface, not a Wallarm special-case in
+the orchestrator.
+
+Results **stream live** over a WebSocket (`/api/recon/stream`) as each host
+clears its liveness probe, instead of blocking until every provider and every
+probe finishes. If a provider fails outright (bad/expired credentials, a
+malformed request, etc.), that failure is surfaced as a distinct, visible
+error next to the results — e.g. `wallarm: Wallarm API error 403: User not
+authenticated` — instead of the run silently ending with nothing and no
+explanation.
 
 Provider credentials are configured once in the **Settings** page and stored
 encrypted at rest (`backend/data/provider_config.enc`, key in
-`backend/data/secret.key` — both gitignored). Disabled or unconfigured
-providers are silently skipped, not treated as errors.
+`backend/data/secret.key` — both gitignored). The Settings page itself
+displays saved values in plaintext (no masking) so you can verify what was
+actually saved — encryption only protects the data at rest on disk, not what
+the API returns to the UI. Disabled or unconfigured providers are silently
+skipped, not treated as errors.
 
 Each discovered, reachable host has a **"Send to App Crawl"** button that
 pre-fills the App Crawl target — the two modes are meant to be used together.
+Once results start coming in, you can **Export CSV** to save the full host
+list (hostname, sources, status, title, server header, resolved IPs,
+reachability) — generated client-side from whatever's currently on screen, no
+extra backend round-trip.
 
 **Adding a new recon provider:** the provider interface is intentionally
 pluggable —
@@ -261,6 +290,16 @@ orchestration logic itself.
    - **Exclude all of `<host>`** — same, but for an entire base URL at once
      (useful for filtering out third-party trackers/ads/analytics domains
      picked up incidentally during the crawl).
+   - **Scan JS files for endpoints** — actively fetches and scans JavaScript
+     (including webpack chunks referenced from already-loaded bundles, not
+     just scripts loaded during this specific crawl) for API-path-looking
+     string literals, then attempts a live request through the same
+     authenticated browser session to confirm each candidate actually exists
+     before adding it to the results. These show up tagged
+     `js_scan_verified` rather than `observed`, so you can tell "the crawler
+     actually called this" apart from "this was found and confirmed by static
+     analysis." An endpoint already seen live during crawling keeps its
+     `observed` tag — JS-scan discovery never downgrades it.
    - Toggle **group by host** for the Postman export (see below).
    - **Export** — downloads both files immediately; exporting does not stop
      the crawl.
@@ -273,6 +312,12 @@ persist across runs.
 There's no LLM in the loop anywhere in the crawler — "stuck" always means
 "pause and ask a human," which is simpler, free, and more predictable than a
 model guessing at a next action.
+
+Switching to **Settings** and back does not reset an in-progress recon run or
+crawl session — the Home and Settings views are both kept mounted at all
+times (just hidden/shown with CSS) specifically so their live WebSocket
+connections, capture counts, and the embedded browser viewer survive
+navigating away and back.
 
 ### Exports
 
@@ -375,9 +420,9 @@ All endpoints are under `http://localhost:8000`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/providers` | List configured providers (secrets excluded) |
+| GET | `/providers` | List configured providers, including real decrypted credential values (see [Configuration](#configuration)) |
 | PUT | `/providers` | Create/update a provider's config (api_key, cookies, extra) |
-| POST | `/run` | Run recon against a domain, returns merged + liveness-probed hosts |
+| WS | `/stream` | Send `{"domains": ["a.com", ...]}` (domains may be empty); streams back `{"type": "host", "data": ...}`, `{"type": "provider_error", "provider": ..., "message": ...}`, and a final `{"type": "done"}` |
 
 **Crawl** (`/api/crawl`)
 
@@ -387,9 +432,10 @@ All endpoints are under `http://localhost:8000`.
 | GET | `/{session_id}/endpoints` | Current normalized, exclusion-filtered endpoint list — safe to poll anytime |
 | POST | `/{session_id}/exclude-host` | Exclude an entire host going forward |
 | POST | `/{session_id}/exclude-endpoint` | Exclude one (method, host, path_template) |
+| POST | `/{session_id}/scan-js` | Actively fetch + scan JS for API paths, then live-verify candidates through the session's browser |
 | GET | `/{session_id}/export?group_by_host=` | Returns `{openapi, postman, endpoint_count}` |
 | POST | `/{session_id}/stop` | Stops the crawl and tears down its container |
-| WS | `/{session_id}/stream` | Live `capture`/`status` events out; `start_autonomous` / `resume_autonomous` / `stop_autonomous` control messages in |
+| WS | `/{session_id}/stream` | Live `capture`/`status`/`js_scan_done`/`js_scan_error` events out; `start_autonomous` / `resume_autonomous` / `stop_autonomous` control messages in |
 
 Interactive docs (Swagger UI) are always available at
 `http://localhost:8000/docs` while the backend is running.
@@ -399,12 +445,26 @@ Interactive docs (Swagger UI) are always available at
 - **Recon provider credentials** — set via the Settings page in the app, not
   environment variables. Stored encrypted at `backend/data/provider_config.enc`
   (Fernet key in `backend/data/secret.key`). Both are gitignored; deleting
-  them resets all provider config.
+  them resets all provider config. The Settings page and `GET /providers` show
+  these values in plaintext by design — this is a trusted, single-user local
+  tool, and encryption is meant to protect the file at rest on disk, not to
+  hide values from the person who saved them.
+- **Wallarm's `api_host` field** accepts a bare host
+  (`us1.api.wallarm.com`), a full base URL, or a value that already includes
+  the `/v1/attack_surface/subdomains` path — `WallarmProvider.build_url`
+  normalizes whichever form you paste in, so it never ends up
+  double-appending the path.
 - **Ports** — backend `8000`, frontend `5173`, noVNC and CDP ports per
   session are chosen dynamically by the OS and are not fixed.
-- **Frontend → backend URL** — hardcoded to `http://localhost:8000` in
-  [frontend/src/lib/api.ts](frontend/src/lib/api.ts); change there if running
-  the backend on a different host/port.
+- **Frontend → backend URL** — derived at runtime from
+  `window.location.hostname` in [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
+  (assumes the backend is always on port `8000` on that same host), so the app
+  works whether you load it via `localhost`, `127.0.0.1`, or a LAN IP without
+  any config change. The backend's CORS policy
+  ([backend/app/main.py](backend/app/main.py)) matches this — it accepts
+  those same origin forms on port `5173` via `allow_origin_regex`, since
+  `localhost` and `127.0.0.1` are distinct browser origins even though they
+  resolve to the same machine.
 
 ## Troubleshooting
 
