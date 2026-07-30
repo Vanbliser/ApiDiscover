@@ -15,6 +15,7 @@ class DnsBruteForceProvider:
 
     name = "dns_bruteforce"
     requires_api_key = False
+    account_wide = False
 
     def __init__(self, wordlist: list[str] | None = None, concurrency: int = 25) -> None:
         self.wordlist = wordlist or DEFAULT_SUBDOMAIN_WORDLIST

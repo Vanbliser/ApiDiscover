@@ -7,12 +7,23 @@ from app.core.models import SubdomainResult
 
 
 class ReconProvider(Protocol):
-    """A source of subdomain/host data for a given root domain."""
+    """
+    A source of subdomain/host data.
+
+    Most providers are domain-scoped: the orchestrator calls query() once per
+    domain entered, and `domain` is used both to build the request and to
+    filter/validate results. A provider can instead set `account_wide = True`
+    (e.g. Wallarm, whose API has no domain filter and returns the whole
+    account's attack surface) — the orchestrator then calls it exactly once
+    per recon run regardless of how many domains were entered, with
+    `domain = None`, and does not expect or apply any per-domain filtering.
+    """
 
     name: str
     requires_api_key: bool
+    account_wide: bool
 
-    async def query(self, domain: str, config: ProviderConfig | None) -> list[SubdomainResult]: ...
+    async def query(self, domain: str | None, config: ProviderConfig | None) -> list[SubdomainResult]: ...
 
 
 class ApiListProvider:
@@ -26,20 +37,21 @@ class ApiListProvider:
 
     name: str = "api_list_provider"
     requires_api_key: bool = True
+    account_wide: bool = False
 
-    def build_url(self, domain: str, config: ProviderConfig) -> str:
+    def build_url(self, domain: str | None, config: ProviderConfig) -> str:
         raise NotImplementedError
 
     def build_headers(self, config: ProviderConfig) -> dict[str, str]:
         return {}
 
-    def build_params(self, domain: str, config: ProviderConfig) -> dict[str, str]:
+    def build_params(self, domain: str | None, config: ProviderConfig) -> dict[str, str]:
         return {}
 
-    def parse_hostnames(self, domain: str, payload: object) -> list[str]:
+    def parse_hostnames(self, domain: str | None, payload: object) -> list[str]:
         raise NotImplementedError
 
-    async def query(self, domain: str, config: ProviderConfig | None):
+    async def query(self, domain: str | None, config: ProviderConfig | None):
         import httpx
 
         from app.core.models import SubdomainResult, SubdomainSource
@@ -77,10 +89,11 @@ class PaginatedApiProvider:
 
     name: str = "paginated_api_provider"
     requires_api_key: bool = True
+    account_wide: bool = False
     page_size: int = 100
     max_pages: int = 200
 
-    def build_url(self, domain: str, config: ProviderConfig) -> str:
+    def build_url(self, domain: str | None, config: ProviderConfig) -> str:
         raise NotImplementedError
 
     def build_headers(self, config: ProviderConfig) -> dict[str, str]:
@@ -89,10 +102,10 @@ class PaginatedApiProvider:
     def build_cookies(self, config: ProviderConfig) -> dict[str, str]:
         return dict(config.cookies)
 
-    def build_body(self, domain: str, config: ProviderConfig, offset: int, limit: int) -> dict:
+    def build_body(self, domain: str | None, config: ProviderConfig, offset: int, limit: int) -> dict:
         raise NotImplementedError
 
-    def parse_page(self, domain: str, payload: object) -> list[str]:
+    def parse_page(self, domain: str | None, payload: object) -> list[str]:
         """Return hostnames found on this page (after any subclass-side filtering)."""
         raise NotImplementedError
 
@@ -104,7 +117,7 @@ class PaginatedApiProvider:
         """
         return len(payload) if isinstance(payload, list) else 0
 
-    async def query(self, domain: str, config: ProviderConfig | None) -> list[SubdomainResult]:
+    async def query(self, domain: str | None, config: ProviderConfig | None) -> list[SubdomainResult]:
         import httpx
 
         from app.core.models import SubdomainResult, SubdomainSource

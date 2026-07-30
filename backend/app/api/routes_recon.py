@@ -1,17 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app.core.config import ProviderConfig, provider_config_store
-from app.recon.orchestrator import merge_results, probe_liveness, run_recon
+from app.recon.orchestrator import ProviderError, run_recon_streaming
 
 router = APIRouter(prefix="/api/recon", tags=["recon"])
-
-
-class RunReconRequest(BaseModel):
-    domain: str
-    probe_liveness: bool = True
 
 
 class ProviderConfigRequest(BaseModel):
@@ -24,7 +19,13 @@ class ProviderConfigRequest(BaseModel):
 
 @router.get("/providers")
 def list_providers():
-    return [c.model_dump(exclude={"api_key", "cookies"}) for c in provider_config_store.list()]
+    """
+    Returns real saved values (api_key, cookies) — this is a trusted,
+    local-only tool, so the Settings page can show and let you verify what
+    was actually saved rather than a masked placeholder. Still encrypted at
+    rest (see ProviderConfigStore); this only affects what the API returns.
+    """
+    return [c.model_dump() for c in provider_config_store.list()]
 
 
 @router.put("/providers")
@@ -40,23 +41,35 @@ def upsert_provider(req: ProviderConfigRequest):
     return {"status": "ok"}
 
 
-@router.post("/run")
-async def run(req: RunReconRequest):
-    subdomain_results = await run_recon(req.domain)
-    hostnames = sorted({r.hostname for r in subdomain_results})
+@router.websocket("/stream")
+async def recon_stream(websocket: WebSocket):
+    """
+    Client sends {"domains": ["a.com", "b.com", ...]} to start a run; hosts
+    stream back one at a time as they're discovered and liveness-probed,
+    instead of waiting for every provider (and every probe) to finish first.
 
-    live_hosts = []
-    if req.probe_liveness and hostnames:
-        live_hosts = await probe_liveness(hostnames)
-        live_hosts = merge_results(subdomain_results, live_hosts)
-    else:
-        from app.core.models import LiveHost
+    `domains` may be an empty list — account-wide providers (e.g. Wallarm,
+    which has no domain filter) still run in that case; domain-scoped
+    providers are simply skipped since they'd have nothing to scope to.
+    """
+    await websocket.accept()
+    try:
+        msg = await websocket.receive_json()
+        domains = [d.strip() for d in msg.get("domains", []) if d.strip()]
 
-        by_host: dict[str, LiveHost] = {}
-        for r in subdomain_results:
-            h = by_host.setdefault(r.hostname, LiveHost(hostname=r.hostname, sources=[]))
-            if r.provider not in h.sources:
-                h.sources.append(r.provider)
-        live_hosts = list(by_host.values())
+        async for item in run_recon_streaming(domains):
+            if isinstance(item, ProviderError):
+                await websocket.send_json(
+                    {"type": "provider_error", "provider": item.provider_name, "message": item.message}
+                )
+            else:
+                await websocket.send_json({"type": "host", "data": item.model_dump()})
 
-    return {"domain": req.domain, "hosts": [h.model_dump() for h in live_hosts]}
+        await websocket.send_json({"type": "done"})
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass

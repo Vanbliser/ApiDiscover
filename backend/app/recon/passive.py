@@ -11,8 +11,12 @@ class CrtShProvider:
 
     name = "crt_sh"
     requires_api_key = False
+    account_wide = False
 
     async def query(self, domain: str, config: ProviderConfig | None) -> list[SubdomainResult]:
+        if config is not None and not config.enabled:
+            return []
+
         url = "https://crt.sh/"
         params = {"q": f"%.{domain}", "output": "json"}
 
