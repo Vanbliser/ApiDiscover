@@ -37,23 +37,39 @@ def build_openapi_spec(endpoints: list[CrawlEndpoint], title: str = "Discovered 
 
         path_item = paths.setdefault(path_key, {})
 
-        parameters = [
-            {
-                "name": p,
-                "in": "path",
-                "required": True,
-                "schema": {"type": "string"},
-            }
-            for p in ep.path_params
-        ] + [
-            {
-                "name": q,
-                "in": "query",
-                "required": False,
-                "schema": {"type": "string"},
-            }
-            for q in ep.query_params
-        ]
+        header_params = []
+        if ep.example_request:
+            header_params = [
+                {
+                    "name": h,
+                    "in": "header",
+                    "required": False,
+                    "schema": {"type": "string", "example": v},
+                }
+                for h, v in ep.example_request.request_headers.items()
+            ]
+
+        parameters = (
+            [
+                {
+                    "name": p,
+                    "in": "path",
+                    "required": True,
+                    "schema": {"type": "string"},
+                }
+                for p in ep.path_params
+            ]
+            + [
+                {
+                    "name": q,
+                    "in": "query",
+                    "required": False,
+                    "schema": {"type": "string"},
+                }
+                for q in ep.query_params
+            ]
+            + header_params
+        )
 
         responses = {
             str(code): {"description": f"Observed response ({ep.hit_count} hit(s))"}

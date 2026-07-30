@@ -10,11 +10,7 @@ def _build_item(ep: CrawlEndpoint) -> dict:
     headers = []
     body = None
     if ep.example_request:
-        headers = [
-            {"key": k, "value": v}
-            for k, v in ep.example_request.request_headers.items()
-            if k.lower() not in ("cookie", "host")
-        ]
+        headers = [{"key": k, "value": v} for k, v in ep.example_request.request_headers.items()]
         if ep.example_request.request_body:
             body = {"mode": "raw", "raw": ep.example_request.request_body}
 
