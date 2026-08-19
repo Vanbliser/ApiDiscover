@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { startCrawl, stopCrawl, uploadFile } from "../lib/api";
+import { checkProxyReachable, startCrawl, stopCrawl, uploadFile } from "../lib/api";
 import { BrowserViewer } from "./BrowserViewer";
 import { CapturedEndpointsPanel } from "./CapturedEndpointsPanel";
 
@@ -20,16 +20,41 @@ export function AppCrawlPanel({ initialUrl }: Props) {
   const [uploadStatus, setUploadStatus] = useState<{ kind: "success" | "error"; message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Proxy is decided here, before Launch browser — Chrome's --proxy-server
+  // is read once at process start (there's no CDP/Playwright way to change
+  // a running browser's proxy), so this can't be a mid-session toggle.
+  const [useProxy, setUseProxy] = useState(false);
+  const [proxyHost, setProxyHost] = useState("host.docker.internal");
+  const [proxyPort, setProxyPort] = useState("8080");
+  const [proxyCheck, setProxyCheck] = useState<{ ok: boolean; message: string } | null>(null);
+  const [checkingProxy, setCheckingProxy] = useState(false);
+  const [activeProxy, setActiveProxy] = useState<string | null>(null);
+
+  async function handleCheckProxy() {
+    setCheckingProxy(true);
+    setProxyCheck(null);
+    try {
+      const { reachable, message } = await checkProxyReachable(proxyHost, Number(proxyPort));
+      setProxyCheck({ ok: reachable, message });
+    } catch (e) {
+      setProxyCheck({ ok: false, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setCheckingProxy(false);
+    }
+  }
+
   async function handleStart() {
     if (!url) return;
     setLoading(true);
     setError(null);
     try {
-      const { session_id, novnc_url } = await startCrawl(url);
+      const proxyServer = useProxy && proxyHost && proxyPort ? `${proxyHost}:${proxyPort}` : undefined;
+      const { session_id, novnc_url } = await startCrawl(url, proxyServer);
       setSessionId(session_id);
       setNovncUrl(novnc_url);
       setCaptureCount(0);
       setShowCaptured(false);
+      setActiveProxy(proxyServer ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -43,6 +68,7 @@ export function AppCrawlPanel({ initialUrl }: Props) {
     setSessionId(null);
     setNovncUrl(null);
     setShowCaptured(false);
+    setActiveProxy(null);
   }
 
   function handleCapture() {
@@ -74,17 +100,57 @@ export function AppCrawlPanel({ initialUrl }: Props) {
     <div className="panel">
       <h2>App Crawl</h2>
       {!hasSession ? (
-        <div className="row">
-          <input
-            placeholder="https://app.example.com"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleStart()}
-          />
-          <button onClick={handleStart} disabled={loading}>
-            {loading ? "Launching browser..." : "Launch browser"}
-          </button>
-        </div>
+        <>
+          <div className="row">
+            <input
+              placeholder="https://app.example.com"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleStart()}
+            />
+            <button onClick={handleStart} disabled={loading}>
+              {loading ? "Launching browser..." : "Launch browser"}
+            </button>
+          </div>
+
+          <div className="row" style={{ marginTop: 8 }}>
+            <label>
+              <input type="checkbox" checked={useProxy} onChange={(e) => setUseProxy(e.target.checked)} />{" "}
+              Route this session's browser traffic through an intercepting proxy (e.g. Burp Suite)
+            </label>
+          </div>
+
+          {useProxy && (
+            <div className="row" style={{ marginTop: 4, flexWrap: "wrap" }}>
+              <input
+                placeholder="proxy host (e.g. host.docker.internal)"
+                value={proxyHost}
+                onChange={(e) => setProxyHost(e.target.value)}
+                style={{ width: 240 }}
+              />
+              <input
+                placeholder="port"
+                value={proxyPort}
+                onChange={(e) => setProxyPort(e.target.value)}
+                style={{ width: 70 }}
+              />
+              <button onClick={handleCheckProxy} disabled={checkingProxy || !proxyHost || !proxyPort}>
+                {checkingProxy ? "Checking..." : "Check reachability"}
+              </button>
+              {proxyCheck && (
+                <p className={proxyCheck.ok ? "hint" : "error"} style={{ width: "100%", margin: "4px 0 0" }}>
+                  {proxyCheck.ok ? "✓ " : "✗ "}
+                  {proxyCheck.message}
+                </p>
+              )}
+              <p className="hint" style={{ width: "100%", margin: "4px 0 0" }}>
+                This is fixed for the whole session once launched — to change it later, stop the
+                crawl and launch a new one. See Settings for the CA certificate step and address
+                guidance for different setups.
+              </p>
+            </div>
+          )}
+        </>
       ) : (
         <>
           {/* Kept mounted across the view toggle so its WebSocket/VNC connection
@@ -96,6 +162,9 @@ export function AppCrawlPanel({ initialUrl }: Props) {
               a file for an upload step in the target app? Use "Attach file" below, then pick it
               from the Uploads folder in the remote browser's file dialog.
             </p>
+            {activeProxy && (
+              <p className="hint">Routing through proxy: <strong>{activeProxy}</strong></p>
+            )}
             <BrowserViewer sessionId={sessionId} novncUrl={novncUrl} onCapture={handleCapture} />
             <div className="row">
               <span>{captureCount} API calls captured</span>

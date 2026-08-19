@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor \
     nginx \
     gettext-base \
+    libnss3-tools \
     && rm -rf /var/lib/apt/lists/*
 
 ENV DISPLAY=:99
@@ -62,6 +63,16 @@ ENV XDG_DOWNLOAD_DIR=/root/Uploads
 
 RUN rm -f /etc/nginx/sites-enabled/default
 COPY cdp-proxy.conf.template /etc/nginx/conf.d/cdp-proxy.conf.template
+
+# Mount point for an optional Burp Suite (or other intercepting proxy) CA
+# certificate, bind-mounted per-session by the backend when the user has
+# uploaded one in Settings. Imported into Chromium's NSS trust database
+# (~/.pki/nssdb) by start-browser.sh *before* Chrome's first launch, since
+# Chromium on Linux ignores the OS trust store for its own certificate
+# verification — the NSS DB is the only place it looks for user-added CAs.
+# If no cert is mounted, this is skipped entirely and browsing behaves
+# exactly as before.
+RUN mkdir -p /etc/proxy-ca
 
 EXPOSE 6080 9223
 

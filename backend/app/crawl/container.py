@@ -36,6 +36,33 @@ def _release_ports(sockets: list[socket.socket]) -> None:
         s.close()
 
 
+async def check_proxy_reachable(proxy_host: str, proxy_port: int, timeout: float = 5.0) -> tuple[bool, str]:
+    """
+    Probes whether `proxy_host:proxy_port` is reachable from *inside a
+    container on this same Docker network* — not from the backend process's
+    own host, since addresses like host.docker.internal only resolve inside
+    a container and would otherwise always fail this check. Runs a
+    throwaway container (reusing the vnc-browser image rather than pulling
+    something extra just for this) that does a plain TCP connect test, so a
+    user can verify their proxy address *before* committing to it at
+    Launch browser time — this is the one time such a check is possible,
+    since --proxy-server is fixed for the life of the container once it
+    starts (see VncBrowserContainer.proxy_server).
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "run", "--rm", VNC_BROWSER_IMAGE,
+        "bash", "-c",
+        f'timeout {timeout} bash -c "exec 3<>/dev/tcp/{proxy_host}/{proxy_port}" 2>&1',
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode == 0:
+        return True, f"{proxy_host}:{proxy_port} is reachable"
+    detail = (stdout + stderr).decode().strip()
+    return False, f"could not reach {proxy_host}:{proxy_port}" + (f" ({detail})" if detail else "")
+
+
 class VncBrowserContainer:
     """
     Launches one Docker container running Xvfb + Chromium + x11vnc + noVNC for a
@@ -55,9 +82,30 @@ class VncBrowserContainer:
     each container renders its own config for its own dynamically-chosen port.
     """
 
-    def __init__(self, container_name: str, uploads_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        container_name: str,
+        uploads_dir: str | None = None,
+        proxy_ca_cert_path: str | None = None,
+        proxy_server: str | None = None,
+    ) -> None:
         self.container_name = container_name
         self.uploads_dir = uploads_dir
+        # Host-side path to a PEM CA cert (e.g. Burp's) to trust inside the
+        # container, if the user has uploaded one in Settings — see
+        # start-browser.sh, which imports it into NSS before Chrome launches.
+        self.proxy_ca_cert_path = proxy_ca_cert_path
+        # "host:port" of an intercepting proxy (e.g. Burp Suite) to pass to
+        # Chrome as --proxy-server, decided once at launch. Chrome reads its
+        # proxy config once from net::ProxyConfigService at process start —
+        # there's no CDP method or Playwright API to change it on a running
+        # browser — so this can't be toggled mid-session; changing it means
+        # stopping this session and starting a new one with a different
+        # value. In exchange, --proxy-server only ever touches the browser's
+        # own page-level networking, never CDP/VNC/anything else in the
+        # container, which a network-layer redirect (iptables) can't
+        # guarantee without also risking those unrelated things.
+        self.proxy_server = proxy_server
         self.novnc_port: int | None = None
         self.cdp_port: int | None = None
 
@@ -75,6 +123,8 @@ class VncBrowserContainer:
                     "-p", f"{novnc_port}:6080",
                     "-p", f"{cdp_port}:9223",
                 ]
+                if self.proxy_server is not None:
+                    args += ["-e", f"PROXY_SERVER={self.proxy_server}"]
                 if self.uploads_dir is not None:
                     # Host-side directory the backend writes uploaded files
                     # into (see routes_crawl.py's upload endpoint) — bind
@@ -82,6 +132,8 @@ class VncBrowserContainer:
                     # count against server disk, not the container's
                     # writable layer.
                     args += ["-v", f"{self.uploads_dir}:/root/Uploads"]
+                if self.proxy_ca_cert_path is not None:
+                    args += ["-v", f"{self.proxy_ca_cert_path}:/etc/proxy-ca/ca.pem:ro"]
                 args.append(VNC_BROWSER_IMAGE)
 
                 proc = await asyncio.create_subprocess_exec(

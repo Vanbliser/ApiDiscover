@@ -46,12 +46,13 @@ export async function upsertProvider(
 }
 
 export async function startCrawl(
-  startUrl: string
+  startUrl: string,
+  proxyServer?: string
 ): Promise<{ session_id: string; novnc_url: string }> {
   const res = await fetch(`${API_BASE}/api/crawl/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ start_url: startUrl }),
+    body: JSON.stringify({ start_url: startUrl, proxy_server: proxyServer || null }),
   });
   if (!res.ok) throw new Error(`start crawl failed: ${res.status}`);
   return res.json();
@@ -77,6 +78,38 @@ export async function getEndpoints(sessionId: string): Promise<DiscoveredEndpoin
   const res = await fetch(`${API_BASE}/api/crawl/${sessionId}/endpoints`);
   const data = await res.json();
   return data.endpoints ?? [];
+}
+
+export async function getProxyCaCertStatus(): Promise<{ configured: boolean }> {
+  const res = await fetch(`${API_BASE}/api/recon/proxy-ca-cert`);
+  if (!res.ok) throw new Error(`failed to load proxy CA cert status: ${res.status}`);
+  return res.json();
+}
+
+export async function uploadProxyCaCert(file: File): Promise<void> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE}/api/recon/proxy-ca-cert`, { method: "PUT", body: formData });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail ?? `upload failed: ${res.status}`);
+  }
+}
+
+export async function deleteProxyCaCert(): Promise<void> {
+  await fetch(`${API_BASE}/api/recon/proxy-ca-cert`, { method: "DELETE" });
+}
+
+export async function checkProxyReachable(
+  host: string,
+  port: number
+): Promise<{ reachable: boolean; message: string }> {
+  const res = await fetch(`${API_BASE}/api/crawl/proxy/check`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host, port }),
+  });
+  return res.json();
 }
 
 export async function uploadFile(

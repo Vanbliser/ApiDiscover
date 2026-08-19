@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
+from app.core.config import get_proxy_ca_cert_path
 from app.core.models import CapturedRequest, CrawlerStatus
 from app.crawl.container import VncBrowserContainer
 from app.crawl.js_scan import JsEndpointScanner
@@ -33,7 +34,7 @@ class CrawlSession:
     the browser/context/cookies never change.
     """
 
-    def __init__(self, session_id: str) -> None:
+    def __init__(self, session_id: str, proxy_server: str | None = None) -> None:
         self.session_id = session_id
         self.status: CrawlerStatus = CrawlerStatus.IDLE
         self.captured: list[CapturedRequest] = []
@@ -48,9 +49,17 @@ class CrawlSession:
         self.excluded_endpoints: set[tuple[str, str, str]] = set()
 
         self.uploads_dir = UPLOADS_ROOT / session_id
+        # Both decided once, here, and fixed for the container's whole life:
+        # a CA cert uploaded in Settings after this session's container has
+        # already started won't retroactively apply (NSS import happens
+        # once at Chrome's first launch — see start-browser.sh), and neither
+        # will a proxy target chosen after start() — changing either means
+        # starting a new session.
         self.container = VncBrowserContainer(
             container_name=f"apidiscover-crawl-{session_id}",
             uploads_dir=str(self.uploads_dir),
+            proxy_ca_cert_path=get_proxy_ca_cert_path(),
+            proxy_server=proxy_server,
         )
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
@@ -65,6 +74,14 @@ class CrawlSession:
     @property
     def novnc_url(self) -> str:
         return self.container.novnc_url
+
+    @property
+    def has_proxy_ca_cert(self) -> bool:
+        return self.container.proxy_ca_cert_path is not None
+
+    @property
+    def proxy_server(self) -> str | None:
+        return self.container.proxy_server
 
     async def start(self, start_url: str, storage_state: dict | None = None) -> None:
         # Must exist before `docker run` so the bind mount has something to
@@ -192,9 +209,9 @@ class CrawlSession:
 _sessions: dict[str, CrawlSession] = {}
 
 
-def create_session() -> CrawlSession:
+def create_session(proxy_server: str | None = None) -> CrawlSession:
     session_id = str(uuid.uuid4())
-    session = CrawlSession(session_id)
+    session = CrawlSession(session_id, proxy_server=proxy_server)
     _sessions[session_id] = session
     return session
 

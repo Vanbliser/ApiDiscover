@@ -6,6 +6,7 @@ import os
 from fastapi import APIRouter, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from app.crawl.container import check_proxy_reachable
 from app.crawl.session import create_session, get_session, remove_session
 from app.crawl.walker import DomWalker
 from app.export.normalize import normalize_captures
@@ -22,6 +23,11 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 class StartCrawlRequest(BaseModel):
     start_url: str
+    # "host:port" of an intercepting proxy (e.g. Burp Suite) to route this
+    # session's browser traffic through, decided here at launch since
+    # Chrome's --proxy-server can't be changed on a running browser — see
+    # VncBrowserContainer.proxy_server.
+    proxy_server: str | None = None
 
 
 class ExcludeHostRequest(BaseModel):
@@ -34,9 +40,27 @@ class ExcludeEndpointRequest(BaseModel):
     path_template: str
 
 
+class ProxyCheckRequest(BaseModel):
+    host: str
+    port: int
+
+
+@router.post("/proxy/check")
+async def check_proxy(req: ProxyCheckRequest):
+    """
+    Pure reachability probe, run *before* Launch browser — lets the user
+    verify their proxy address from inside a container on this Docker
+    network (see check_proxy_reachable for why it can't just be checked
+    from the backend host directly) before committing to it, since
+    --proxy-server is fixed for a session's whole lifetime once launched.
+    """
+    ok, message = await check_proxy_reachable(req.host, req.port)
+    return {"reachable": ok, "message": message}
+
+
 @router.post("/start")
 async def start_crawl(req: StartCrawlRequest):
-    session = create_session()
+    session = create_session(proxy_server=req.proxy_server)
     await session.start(req.start_url)
     return {"session_id": session.session_id, "novnc_url": session.novnc_url}
 
