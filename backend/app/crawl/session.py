@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shutil
 import uuid
+from pathlib import Path
 from typing import Callable
 
 from urllib.parse import urlsplit
@@ -11,6 +13,12 @@ from app.core.models import CapturedRequest, CrawlerStatus
 from app.crawl.container import VncBrowserContainer
 from app.crawl.js_scan import JsEndpointScanner
 from app.export.normalize import templatize_path
+
+# Per-session scratch space for files uploaded from the browser client and
+# bind-mounted into the session's container (see VncBrowserContainer). Lives
+# under backend/data alongside the other gitignored local state
+# (provider_config.enc, secret.key).
+UPLOADS_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
 
 
 class CrawlSession:
@@ -39,7 +47,11 @@ class CrawlSession:
         self.excluded_hosts: set[str] = set()
         self.excluded_endpoints: set[tuple[str, str, str]] = set()
 
-        self.container = VncBrowserContainer(container_name=f"apidiscover-crawl-{session_id}")
+        self.uploads_dir = UPLOADS_ROOT / session_id
+        self.container = VncBrowserContainer(
+            container_name=f"apidiscover-crawl-{session_id}",
+            uploads_dir=str(self.uploads_dir),
+        )
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
@@ -55,6 +67,11 @@ class CrawlSession:
         return self.container.novnc_url
 
     async def start(self, start_url: str, storage_state: dict | None = None) -> None:
+        # Must exist before `docker run` so the bind mount has something to
+        # attach to — Docker would otherwise create it itself as root-owned,
+        # which works too, but creating it explicitly keeps ownership/cleanup
+        # unambiguous on the backend side.
+        self.uploads_dir.mkdir(parents=True, exist_ok=True)
         await self.container.start()
 
         self._playwright = await async_playwright().start()
@@ -165,6 +182,10 @@ class CrawlSession:
         if self._playwright:
             await self._playwright.stop()
         await self.container.stop()
+        # The bind mount is a host-side directory independent of the
+        # container's own --rm teardown, so it needs its own cleanup —
+        # uploaded files must not outlive the session.
+        shutil.rmtree(self.uploads_dir, ignore_errors=True)
         self.status = CrawlerStatus.FINISHED
 
 

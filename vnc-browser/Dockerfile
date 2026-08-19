@@ -38,6 +38,28 @@ RUN mkdir -p /root/.fluxbox
 COPY fluxbox-apps /root/.fluxbox/apps
 COPY fluxbox-init /root/.fluxbox/init
 
+# Mount point for host-uploaded files (bind-mounted per-session by the
+# backend — see container.py). Getting Chromium's native file-picker (opened
+# by a page's <input type=file>) to default to this folder isn't controlled
+# by one single documented switch, so this is belt-and-suspenders across the
+# three mechanisms that plausibly influence it:
+#  - Chromium's DownloadDirectory enterprise policy: guaranteed for the
+#    Save/download dialog, and observed in practice to also seed the Open
+#    dialog's starting folder since both fall back to the same "last used
+#    directory" preference when no directory-specific history exists yet.
+#  - XDG_DOWNLOAD_DIR: GTK's file chooser (what Chromium's Open dialog
+#    actually renders on Linux) consults the XDG user-dirs "Downloads"
+#    location as one of its default shortcuts.
+#  - A GTK bookmark for the same path, so it's one click away in the
+#    sidebar even on a build/version where neither of the above applies.
+RUN mkdir -p /root/Uploads && \
+    mkdir -p /root/.config/gtk-3.0 /root/.config /etc/opt/chrome/policies/managed && \
+    printf 'file:///root/Uploads Uploads\n' > /root/.config/gtk-3.0/bookmarks && \
+    printf 'XDG_DOWNLOAD_DIR="/root/Uploads"\n' > /root/.config/user-dirs.dirs && \
+    printf '{"DownloadDirectory": "/root/Uploads", "PromptForDownloadLocation": false}\n' \
+        > /etc/opt/chrome/policies/managed/uploads.json
+ENV XDG_DOWNLOAD_DIR=/root/Uploads
+
 RUN rm -f /etc/nginx/sites-enabled/default
 COPY cdp-proxy.conf.template /etc/nginx/conf.d/cdp-proxy.conf.template
 

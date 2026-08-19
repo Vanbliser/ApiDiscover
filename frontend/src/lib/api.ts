@@ -79,6 +79,23 @@ export async function getEndpoints(sessionId: string): Promise<DiscoveredEndpoin
   return data.endpoints ?? [];
 }
 
+export async function uploadFile(
+  sessionId: string,
+  file: File
+): Promise<{ status: string; filename: string; size: number }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE}/api/crawl/${sessionId}/upload`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail ?? `upload failed: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function scanJs(sessionId: string): Promise<{ found_count: number }> {
   const res = await fetch(`${API_BASE}/api/crawl/${sessionId}/scan-js`, { method: "POST" });
   if (!res.ok) throw new Error(`JS scan failed: ${res.status}`);

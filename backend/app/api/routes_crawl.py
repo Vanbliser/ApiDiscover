@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app.crawl.session import create_session, get_session, remove_session
@@ -14,6 +15,9 @@ from app.export.postman import build_postman_collection
 router = APIRouter(prefix="/api/crawl", tags=["crawl"])
 
 _walkers: dict[str, DomWalker] = {}
+
+MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GB
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 class StartCrawlRequest(BaseModel):
@@ -80,6 +84,42 @@ async def scan_js(session_id: str):
         return {"error": "session not found"}
     found = await session.run_js_scan()
     return {"found_count": len(found)}
+
+
+@router.post("/{session_id}/upload")
+async def upload_file(session_id: str, file: UploadFile):
+    """
+    Saves an uploaded file into this session's uploads directory, which is
+    bind-mounted into the running container at /root/Uploads — so it shows
+    up for the user to pick from the native file-picker triggered by the
+    target site's own <input type=file>. Capped at 1GB, streamed to disk
+    rather than buffered fully in memory.
+    """
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    filename = os.path.basename(file.filename or "upload")
+    if not filename:
+        raise HTTPException(status_code=400, detail="missing filename")
+
+    dest = session.uploads_dir / filename
+    written = 0
+    try:
+        with open(dest, "wb") as out:
+            while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+                written += len(chunk)
+                if written > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="file exceeds 1GB limit")
+                out.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"upload failed: {e}")
+
+    return {"status": "ok", "filename": filename, "size": written}
 
 
 @router.get("/{session_id}/export")

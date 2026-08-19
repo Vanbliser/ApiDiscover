@@ -55,8 +55,9 @@ class VncBrowserContainer:
     each container renders its own config for its own dynamically-chosen port.
     """
 
-    def __init__(self, container_name: str) -> None:
+    def __init__(self, container_name: str, uploads_dir: str | None = None) -> None:
         self.container_name = container_name
+        self.uploads_dir = uploads_dir
         self.novnc_port: int | None = None
         self.cdp_port: int | None = None
 
@@ -67,13 +68,24 @@ class VncBrowserContainer:
             async with _launch_lock:
                 (novnc_port, cdp_port), sockets = _reserve_ports(2)
 
-                proc = await asyncio.create_subprocess_exec(
+                args = [
                     "docker", "run", "-d", "--rm",
                     "--name", self.container_name,
                     "-e", f"CDP_HOST_PORT={cdp_port}",
                     "-p", f"{novnc_port}:6080",
                     "-p", f"{cdp_port}:9223",
-                    VNC_BROWSER_IMAGE,
+                ]
+                if self.uploads_dir is not None:
+                    # Host-side directory the backend writes uploaded files
+                    # into (see routes_crawl.py's upload endpoint) — bind
+                    # mounted rather than `docker cp`'d in, so large uploads
+                    # count against server disk, not the container's
+                    # writable layer.
+                    args += ["-v", f"{self.uploads_dir}:/root/Uploads"]
+                args.append(VNC_BROWSER_IMAGE)
+
+                proc = await asyncio.create_subprocess_exec(
+                    *args,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
