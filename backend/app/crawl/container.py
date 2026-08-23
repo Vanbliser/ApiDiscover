@@ -108,23 +108,33 @@ class VncBrowserContainer:
         self.proxy_server = proxy_server
         self.novnc_port: int | None = None
         self.cdp_port: int | None = None
+        self.capture_port: int | None = None
 
     async def start(self) -> None:
         last_error: str | None = None
 
         for attempt in range(1, MAX_LAUNCH_ATTEMPTS + 1):
             async with _launch_lock:
-                (novnc_port, cdp_port), sockets = _reserve_ports(2)
+                (novnc_port, cdp_port, capture_port), sockets = _reserve_ports(3)
 
                 args = [
                     "docker", "run", "-d", "--rm",
                     "--name", self.container_name,
                     "-e", f"CDP_HOST_PORT={cdp_port}",
+                    # Always set, even empty — supervisord's %(ENV_PROXY_SERVER)s
+                    # expansion in supervisord.conf hard-fails at container
+                    # startup if the var isn't present in the environment at
+                    # all, so this can't be added only when a proxy is chosen.
+                    "-e", f"PROXY_SERVER={self.proxy_server or ''}",
                     "-p", f"{novnc_port}:6080",
                     "-p", f"{cdp_port}:9223",
+                    # mitmproxy's capture API (see capture_addon.py) — the
+                    # backend polls this instead of Playwright's
+                    # page.on("response"), which silently missed requests
+                    # that started before Playwright's CDP session finished
+                    # attaching to this already-running Chrome instance.
+                    "-p", f"{capture_port}:9225",
                 ]
-                if self.proxy_server is not None:
-                    args += ["-e", f"PROXY_SERVER={self.proxy_server}"]
                 if self.uploads_dir is not None:
                     # Host-side directory the backend writes uploaded files
                     # into (see routes_crawl.py's upload endpoint) — bind
@@ -149,6 +159,7 @@ class VncBrowserContainer:
             if proc.returncode == 0:
                 self.novnc_port = novnc_port
                 self.cdp_port = cdp_port
+                self.capture_port = capture_port
                 await self._wait_for_cdp()
                 return
 
@@ -184,6 +195,11 @@ class VncBrowserContainer:
     def novnc_url(self) -> str:
         assert self.novnc_port is not None
         return f"http://localhost:{self.novnc_port}/vnc.html?autoconnect=true&resize=scale"
+
+    @property
+    def capture_api_endpoint(self) -> str:
+        assert self.capture_port is not None
+        return f"http://localhost:{self.capture_port}"
 
     async def stop(self) -> None:
         proc = await asyncio.create_subprocess_exec(

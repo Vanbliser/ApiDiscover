@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, WebSocket, WebSocketDi
 from pydantic import BaseModel
 
 from app.crawl.container import check_proxy_reachable
-from app.crawl.session import create_session, get_session, remove_session
+from app.crawl.session import STATIC_FILE_EXTENSION_GROUPS, create_session, get_session, remove_session
 from app.crawl.walker import DomWalker
 from app.export.normalize import normalize_captures
 from app.export.openapi import build_openapi_spec
@@ -40,9 +40,28 @@ class ExcludeEndpointRequest(BaseModel):
     path_template: str
 
 
+class ExcludeExtensionRequest(BaseModel):
+    extension: str
+
+
+class ExcludeMethodRequest(BaseModel):
+    method: str
+
+
 class ProxyCheckRequest(BaseModel):
     host: str
     port: int
+
+
+@router.get("/static-extension-groups")
+def get_static_extension_groups():
+    """
+    The preset extension groups behind the "Exclude static files" quick
+    toggle (css/html/js/images/fonts) — returned so the frontend's chip list
+    stays in sync with the backend's actual filter instead of duplicating
+    the list in two places.
+    """
+    return {group: sorted(exts) for group, exts in STATIC_FILE_EXTENSION_GROUPS.items()}
 
 
 @router.post("/proxy/check")
@@ -72,8 +91,35 @@ async def view_endpoints(session_id: str):
     if session is None:
         return {"error": "session not found"}
 
-    endpoints = normalize_captures(session.captured)
-    return {"endpoints": [e.model_dump() for e in endpoints]}
+    endpoints = normalize_captures(session.visible_captures())
+    # example_requests (every distinct query-value variant, full headers +
+    # body each) is only needed by the export step — excluded here since
+    # this endpoint is polled repeatedly during a crawl and the frontend's
+    # live view never renders per-variant detail, just the aggregate row.
+    return {"endpoints": [e.model_dump(exclude={"example_requests"}) for e in endpoints]}
+
+
+@router.get("/{session_id}/exclusions")
+async def list_exclusions(session_id: str):
+    """
+    Currently-excluded hosts/endpoints for this session — the frontend needs
+    this separately from /endpoints, since an excluded host's own endpoints
+    (and thus any UI derived only from the visible endpoint list) disappear
+    from that response entirely, but the excluded host itself still needs a
+    place to show a "re-include" action.
+    """
+    session = get_session(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    return {
+        "hosts": sorted(session.excluded_hosts),
+        "endpoints": [
+            {"method": method, "host": host, "path_template": path_template}
+            for method, host, path_template in sorted(session.excluded_endpoints)
+        ],
+        "extensions": sorted(session.excluded_extensions),
+        "methods": sorted(session.excluded_methods),
+    }
 
 
 @router.post("/{session_id}/exclude-host")
@@ -85,12 +131,72 @@ async def exclude_host(session_id: str, req: ExcludeHostRequest):
     return {"status": "ok"}
 
 
+@router.post("/{session_id}/include-host")
+async def include_host(session_id: str, req: ExcludeHostRequest):
+    """
+    Undoes exclude-host. Since exclusion is a view filter rather than
+    deletion (see CrawlSession.visible_captures), this instantly restores
+    everything captured for that host, including while it was excluded —
+    not just resuming capture of new matching requests going forward.
+    """
+    session = get_session(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    session.include_host(req.host)
+    return {"status": "ok"}
+
+
 @router.post("/{session_id}/exclude-endpoint")
 async def exclude_endpoint(session_id: str, req: ExcludeEndpointRequest):
     session = get_session(session_id)
     if session is None:
         return {"error": "session not found"}
     session.exclude_endpoint(req.method, req.host, req.path_template)
+    return {"status": "ok"}
+
+
+@router.post("/{session_id}/include-endpoint")
+async def include_endpoint(session_id: str, req: ExcludeEndpointRequest):
+    session = get_session(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    session.include_endpoint(req.method, req.host, req.path_template)
+    return {"status": "ok"}
+
+
+@router.post("/{session_id}/exclude-extension")
+async def exclude_extension(session_id: str, req: ExcludeExtensionRequest):
+    session = get_session(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    session.exclude_extension(req.extension)
+    return {"status": "ok"}
+
+
+@router.post("/{session_id}/include-extension")
+async def include_extension(session_id: str, req: ExcludeExtensionRequest):
+    session = get_session(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    session.include_extension(req.extension)
+    return {"status": "ok"}
+
+
+@router.post("/{session_id}/exclude-method")
+async def exclude_method(session_id: str, req: ExcludeMethodRequest):
+    session = get_session(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    session.exclude_method(req.method)
+    return {"status": "ok"}
+
+
+@router.post("/{session_id}/include-method")
+async def include_method(session_id: str, req: ExcludeMethodRequest):
+    session = get_session(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    session.include_method(req.method)
     return {"status": "ok"}
 
 
@@ -152,7 +258,7 @@ async def export_results(session_id: str, group_by_host: bool = False):
     if session is None:
         return {"error": "session not found"}
 
-    endpoints = normalize_captures(session.captured)
+    endpoints = normalize_captures(session.visible_captures())
     return {
         "openapi": build_openapi_spec(endpoints),
         "postman": build_postman_collection(endpoints, group_by_host=group_by_host),

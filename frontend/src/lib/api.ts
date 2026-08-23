@@ -135,8 +135,65 @@ export async function scanJs(sessionId: string): Promise<{ found_count: number }
   return res.json();
 }
 
+export interface Exclusions {
+  hosts: string[];
+  endpoints: { method: string; host: string; path_template: string }[];
+  extensions: string[];
+  methods: string[];
+}
+
+export async function getExclusions(sessionId: string): Promise<Exclusions> {
+  const res = await fetch(`${API_BASE}/api/crawl/${sessionId}/exclusions`);
+  return res.json();
+}
+
+export async function getStaticExtensionGroups(): Promise<Record<string, string[]>> {
+  const res = await fetch(`${API_BASE}/api/crawl/static-extension-groups`);
+  return res.json();
+}
+
+export async function excludeExtension(sessionId: string, extension: string): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/exclude-extension`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ extension }),
+  });
+}
+
+export async function includeExtension(sessionId: string, extension: string): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/include-extension`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ extension }),
+  });
+}
+
+export async function excludeMethod(sessionId: string, method: string): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/exclude-method`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method }),
+  });
+}
+
+export async function includeMethod(sessionId: string, method: string): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/include-method`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method }),
+  });
+}
+
 export async function excludeHost(sessionId: string, host: string): Promise<void> {
   await fetch(`${API_BASE}/api/crawl/${sessionId}/exclude-host`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ host }),
+  });
+}
+
+export async function includeHost(sessionId: string, host: string): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/include-host`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ host }),
@@ -150,6 +207,19 @@ export async function excludeEndpoint(
   pathTemplate: string
 ): Promise<void> {
   await fetch(`${API_BASE}/api/crawl/${sessionId}/exclude-endpoint`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method, host, path_template: pathTemplate }),
+  });
+}
+
+export async function includeEndpoint(
+  sessionId: string,
+  method: string,
+  host: string,
+  pathTemplate: string
+): Promise<void> {
+  await fetch(`${API_BASE}/api/crawl/${sessionId}/include-endpoint`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ method, host, path_template: pathTemplate }),

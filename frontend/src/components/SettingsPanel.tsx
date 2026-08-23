@@ -312,9 +312,12 @@ function ProxySetupGuide() {
         </li>
         <li>
           Otherwise, an SSH reverse tunnel works without extra software:{" "}
-          <code>ssh -R 8080:localhost:8080 user@remote-backend-host</code> (run from your laptop,
-          while Burp listens on port 8080 there) — then use <code>localhost:8080</code> as the
-          proxy address <em>from the remote server's point of view</em>.
+          <code>ssh -R 127.0.0.1:8080:localhost:8080 user@remote-backend-host</code> (run from your
+          laptop, while Burp listens on port 8080 there) — then use <code>localhost:8080</code> as
+          the proxy address <em>from the remote server's point of view</em>. Keep the{" "}
+          <code>127.0.0.1:</code> prefix exactly as shown if this backend is internet-facing —
+          dropping it can expose Burp to anyone who finds the remote server's IP.{" "}
+          <SshTunnelDetails />
         </li>
       </ul>
       <p>
@@ -322,8 +325,11 @@ function ProxySetupGuide() {
         server's address directly, e.g. <code>1.2.3.4:8080</code>. Bind Burp's listener to{" "}
         <code>0.0.0.0</code> (or the specific interface) instead of the default{" "}
         <code>127.0.0.1</code> so it actually accepts connections from elsewhere — and firewall
-        that port to only the backend's IP, since this makes Burp reachable over a real network
-        rather than just loopback.
+        that port to only the backend's IP (or the specific IPs of machines that need it), since
+        this makes Burp reachable over a real network rather than just loopback. If this app's own
+        backend is internet-facing, treat that firewall rule as load-bearing, not optional — the
+        same reachability that lets the backend route traffic to Burp is reachability anyone else
+        could probe for too if the rule is too broad.
       </p>
       <p>
         Whichever case applies, use the "Check reachability" button on the App Crawl launch form
@@ -333,5 +339,86 @@ function ProxySetupGuide() {
         the one moment to catch a wrong address before committing to it.
       </p>
     </div>
+  );
+}
+
+function SshTunnelDetails() {
+  const [open, setOpen] = useState(false);
+  return (
+    <span>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          color: "inherit",
+          textDecoration: "underline",
+          cursor: "pointer",
+          font: "inherit",
+        }}
+      >
+        {open ? "Hide details" : "See details"}
+      </button>
+      {open && (
+        <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: "2px solid currentColor", opacity: 0.9 }}>
+          <p>
+            <strong>The setup:</strong> your laptop runs Burp, listening on{" "}
+            <code>127.0.0.1:8080</code> (only accepts connections from itself). The remote server
+            runs this app's backend and needs to send crawl traffic to Burp. The remote server
+            can't connect to your laptop directly — laptops usually sit behind NAT/CGNAT with no
+            stable address reachable from outside. So the direction is flipped: your laptop
+            initiates a connection <em>to</em> the remote server, and that connection becomes a
+            tunnel the remote server can use to reach back to Burp.
+          </p>
+          <p>
+            <strong>What the command does:</strong> running{" "}
+            <code>ssh -R 127.0.0.1:8080:localhost:8080 user@remote-backend-host</code> from your
+            laptop opens a normal SSH session, and the <code>-R</code> flag tells the remote
+            server "open port 8080 on yourself, and forward any connection that arrives there back
+            through this SSH connection to <code>localhost:8080</code> on my end" (where Burp is
+            listening). Now something is listening on port 8080 on the remote server, and anything
+            that connects to it ends up talking to Burp on your laptop. That's why the app's proxy
+            address field gets set to <code>localhost:8080</code> — from the remote server's own
+            point of view, that's where "Burp" now appears to live, since that's the tunnel
+            entrance.
+          </p>
+          <p>
+            <strong>What the <code>127.0.0.1:</code> prefix changes:</strong> the full syntax of{" "}
+            <code>-R</code> is <code>-R [bind_address:]port:host:port</code>. The leading{" "}
+            <code>127.0.0.1:</code> is the bind address <em>on the remote server</em> — it controls
+            who on the remote server's network can connect to the tunnel entrance.
+          </p>
+          <ul>
+            <li>
+              <strong>With it</strong> (as shown above): the tunnel entrance only accepts
+              connections from the remote server itself — only processes running on that same
+              server (like this app's backend) can use it to reach Burp. Nobody outside that
+              server can touch port 8080 on it at all.
+            </li>
+            <li>
+              <strong>Without it</strong> (just <code>-R 8080:localhost:8080</code>): SSH's
+              default server-side setting (<code>GatewayPorts</code>) can bind that tunnel
+              entrance to all interfaces on the remote server, including its public one. If that
+              default is in play, anyone on the internet who knows the remote server's IP could
+              connect to <code>&lt;remote-server-ip&gt;:8080</code> directly and land inside your
+              tunnel, reaching Burp on your laptop — completely bypassing this app and any of its
+              own access controls.
+            </li>
+          </ul>
+          <p>
+            <strong>Why it matters more for an internet-facing deployment:</strong> when the
+            backend was only reachable over a private/trusted network, a slightly-too-open port
+            was a smaller risk — the pool of people who could even attempt to reach it was already
+            limited. Once the backend is reachable from the open internet, the same small
+            misconfiguration means literally anyone could reach it, not just people your team
+            trusts. Always include the <code>127.0.0.1:</code> prefix in this command when the
+            remote server is internet-facing — it costs nothing and closes off a path into Burp
+            that has nothing to do with whether this app itself is secure.
+          </p>
+        </div>
+      )}
+    </span>
   );
 }

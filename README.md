@@ -89,12 +89,18 @@ Open **http://localhost:5173** once it prints that the servers are up.
 │                                                                        │
 │   Xvfb (virtual display) ── fluxbox (borderless, single window)      │
 │        │                                                              │
-│        ├── Chromium (Playwright-bundled) ── CDP on 127.0.0.1:9222    │
+│        ├── Chromium (Playwright-bundled), --proxy-server=:9224       │
+│        │        │                    CDP on 127.0.0.1:9222           │
 │        │        │                                                     │
 │        │        └── nginx reverse proxy :9223 → rewrites Host header │
 │        │            + webSocketDebuggerUrl so CDP is reachable from  │
 │        │            outside the container (Chrome only trusts        │
 │        │            loopback-looking requests)                       │
+│        │                                                              │
+│        ├── mitmproxy :9224 — actual API-capture point (see below) — │
+│        │        capture API on :9225, polled by the backend          │
+│        │        └── [optional] forwards to an intercepting proxy     │
+│        │            (e.g. Burp Suite) if configured at launch        │
 │        │                                                              │
 │        └── x11vnc (VNC server) ── websockify + noVNC ── :6080        │
 │             (embedded directly in the frontend via an iframe)        │
@@ -111,6 +117,23 @@ you hand control to the autonomous crawler, which drives the exact same
 browser/session/cookies via the Chrome DevTools Protocol (CDP). If the crawler
 gets stuck (a multi-step form, an unexpected page), it pauses and hands
 control back to you — the same VNC session, no separate mode.
+
+**Why capture happens in mitmproxy, not in Playwright.** An earlier version
+recorded captured requests via Playwright's `page.on("response")` — this
+turned out to silently miss requests that started before Playwright's CDP
+session finished attaching to the container's already-running Chrome (a
+documented Playwright/CDP timing race: Chrome doesn't retroactively replay
+network events to a client that attaches late), and it only ever saw traffic
+in the first place while Playwright happened to be attached, which isn't
+guaranteed during manual control. Chrome is now always launched with
+`--proxy-server` pointed at a local mitmproxy instance inside the container
+([vnc-browser/capture_addon.py](vnc-browser/capture_addon.py)), which sees
+every HTTP(S) request the browser sends regardless of Playwright/CDP attach
+state and regardless of manual vs. autonomous control — this is the actual
+source of truth for the captured-API list, polled by the backend
+([backend/app/crawl/capture_poller.py](backend/app/crawl/capture_poller.py))
+instead of Playwright events. Playwright is still used, but only for what
+it's actually needed for: driving navigation and the autonomous crawler.
 
 **Why Docker per session?** Each crawl session gets its own disposable
 container (Xvfb + Chromium + noVNC + a small nginx proxy). This keeps sessions
@@ -319,6 +342,19 @@ times (just hidden/shown with CSS) specifically so their live WebSocket
 connections, capture counts, and the embedded browser viewer survive
 navigating away and back.
 
+**Routing through an intercepting proxy (e.g. Burp Suite).** Before clicking
+Launch browser, optionally check "Route this session's browser traffic
+through an intercepting proxy" and enter its address (`host:port`) — a
+"Check reachability" button verifies that address is actually reachable
+before you commit to it. This is decided once, at launch: Chrome reads its
+proxy setting a single time at process start, so it can't be changed
+mid-session — to point a session at a different proxy, stop the crawl and
+launch a new one. If you want HTTPS pages to load without certificate
+warnings while proxying, upload the proxy's CA certificate on the Settings
+page first (see [Configuration](#configuration)) — the Settings page also
+has a step-by-step guide for same-machine, remote-backend, and
+remote-Burp-server setups.
+
 ### Exports
 
 Two files, generated from the same deduplicated/normalized endpoint list:
@@ -390,7 +426,9 @@ ApiDiscover/
 │   │   ├── main.py           FastAPI app entrypoint
 │   │   ├── api/               routes_recon.py, routes_crawl.py
 │   │   ├── recon/              provider interfaces + implementations
-│   │   ├── crawl/               session.py, container.py, walker.py
+│   │   ├── crawl/               session.py, container.py, walker.py,
+│   │   │                        capture_poller.py (polls mitmproxy's
+│   │   │                        capture API instead of Playwright events)
 │   │   ├── export/              normalize.py, openapi.py, postman.py
 │   │   └── core/                 models.py, config.py
 │   ├── test_fixture/          tiny local app for testing the crawler
@@ -402,10 +440,13 @@ ApiDiscover/
 │       ├── components/         ReconPanel, AppCrawlPanel, BrowserViewer,
 │       │                       CapturedEndpointsPanel, SettingsPanel
 │       └── lib/api.ts          typed fetch/WebSocket client
-└── vnc-browser/               Docker image: Xvfb + Chromium + noVNC + nginx
+└── vnc-browser/               Docker image: Xvfb + Chromium + mitmproxy + noVNC + nginx
     ├── Dockerfile
     ├── supervisord.conf        process manager for everything in the container
-    ├── start-browser.sh        waits for Xvfb, launches Chromium
+    ├── start-browser.sh        waits for Xvfb + mitmproxy, launches Chromium
+    ├── start-mitm.sh           starts mitmproxy, the actual API-capture point
+    ├── capture_addon.py        mitmproxy addon: logs every request/response,
+    │                           serves them over a small HTTP API
     ├── start-nginx.sh          renders cdp-proxy.conf from template, starts nginx
     ├── cdp-proxy.conf.template
     ├── fluxbox-apps            borderless/maximized window rule
@@ -454,8 +495,18 @@ Interactive docs (Swagger UI) are always available at
   the `/v1/attack_surface/subdomains` path — `WallarmProvider.build_url`
   normalizes whichever form you paste in, so it never ends up
   double-appending the path.
-- **Ports** — backend `8000`, frontend `5173`, noVNC and CDP ports per
-  session are chosen dynamically by the OS and are not fixed.
+- **Intercepting-proxy CA certificate** — uploaded via the Settings page,
+  stored as a plain PEM file at `backend/data/proxy_ca.pem` (gitignored; not
+  encrypted, since a CA certificate is a public document with no private key
+  involved — there's nothing at rest here that needs protecting). Bind-mounted
+  read-only into a session's container and consumed by mitmproxy
+  ([vnc-browser/start-mitm.sh](vnc-browser/start-mitm.sh)) to validate its own
+  outbound connection to the configured upstream proxy — Chrome itself never
+  sees this cert; it only ever trusts mitmproxy's own CA
+  (`~/.mitmproxy/mitmproxy-ca-cert.pem`, generated fresh per container),
+  since mitmproxy is the only thing Chrome talks to directly now.
+- **Ports** — backend `8000`, frontend `5173`, noVNC, CDP, and the capture
+  API port per session are chosen dynamically by the OS and are not fixed.
 - **Frontend → backend URL** — derived at runtime from
   `window.location.hostname` in [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
   (assumes the backend is always on port `8000` on that same host), so the app

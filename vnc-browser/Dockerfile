@@ -18,7 +18,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nginx \
     gettext-base \
     libnss3-tools \
+    python3-pip \
     && rm -rf /var/lib/apt/lists/*
+
+# mitmproxy is the actual capture point for App Crawl sessions (see
+# capture_addon.py) — Chrome is always launched pointed at it
+# (start-browser.sh), rather than relying on Playwright/CDP events, which
+# turned out to silently miss requests that start before Playwright's CDP
+# session finishes attaching to an already-running Chrome instance.
+RUN pip3 install --no-cache-dir mitmproxy==11.0.2
 
 ENV DISPLAY=:99
 ENV SCREEN_RESOLUTION=1280x800x24
@@ -27,7 +35,9 @@ RUN mkdir -p /var/log/supervisor
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY start-browser.sh /usr/local/bin/start-browser.sh
 COPY start-nginx.sh /usr/local/bin/start-nginx.sh
-RUN chmod +x /usr/local/bin/start-browser.sh /usr/local/bin/start-nginx.sh
+COPY start-mitm.sh /usr/local/bin/start-mitm.sh
+COPY capture_addon.py /usr/local/bin/capture_addon.py
+RUN chmod +x /usr/local/bin/start-browser.sh /usr/local/bin/start-nginx.sh /usr/local/bin/start-mitm.sh
 
 # supervisord runs everything as root, so fluxbox reads root's per-user
 # config. The apps rule makes Chromium's window borderless and pinned to
@@ -66,14 +76,12 @@ COPY cdp-proxy.conf.template /etc/nginx/conf.d/cdp-proxy.conf.template
 
 # Mount point for an optional Burp Suite (or other intercepting proxy) CA
 # certificate, bind-mounted per-session by the backend when the user has
-# uploaded one in Settings. Imported into Chromium's NSS trust database
-# (~/.pki/nssdb) by start-browser.sh *before* Chrome's first launch, since
-# Chromium on Linux ignores the OS trust store for its own certificate
-# verification — the NSS DB is the only place it looks for user-added CAs.
-# If no cert is mounted, this is skipped entirely and browsing behaves
-# exactly as before.
+# uploaded one in Settings. Consumed by start-mitm.sh to validate mitmproxy's
+# OWN outbound hop to Burp (see start-mitm.sh) — Chrome no longer talks to
+# Burp directly, so it no longer needs this cert; it trusts mitmproxy's own
+# generated CA instead (see start-browser.sh).
 RUN mkdir -p /etc/proxy-ca
 
-EXPOSE 6080 9223
+EXPOSE 6080 9223 9225
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

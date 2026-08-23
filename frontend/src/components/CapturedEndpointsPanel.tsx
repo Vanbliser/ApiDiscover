@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
 import {
   type DiscoveredEndpoint,
+  type Exclusions,
   getEndpoints,
+  getExclusions,
+  getStaticExtensionGroups,
   excludeHost,
+  includeHost,
   excludeEndpoint,
+  includeEndpoint,
+  excludeExtension,
+  includeExtension,
+  excludeMethod,
+  includeMethod,
   exportCrawl,
   downloadJson,
   scanJs,
@@ -17,27 +26,80 @@ interface Props {
 
 export function CapturedEndpointsPanel({ sessionId, refreshSignal, onClose }: Props) {
   const [endpoints, setEndpoints] = useState<DiscoveredEndpoint[]>([]);
+  const [exclusions, setExclusions] = useState<Exclusions>({ hosts: [], endpoints: [], extensions: [], methods: [] });
+  const [extensionGroups, setExtensionGroups] = useState<Record<string, string[]>>({});
   const [groupByHost, setGroupByHost] = useState(false);
   const [loading, setLoading] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState<string | null>(null);
   const [lastScanFound, setLastScanFound] = useState<number | null>(null);
+  const [methodInput, setMethodInput] = useState("");
 
   async function refresh() {
     setEndpoints(await getEndpoints(sessionId));
+    setExclusions(await getExclusions(sessionId));
   }
 
   useEffect(() => {
     refresh();
   }, [sessionId, refreshSignal]);
 
+  useEffect(() => {
+    getStaticExtensionGroups().then(setExtensionGroups);
+  }, []);
+
+  const allStaticExtensions = Object.values(extensionGroups).flat();
+  const allStaticExcluded =
+    allStaticExtensions.length > 0 && allStaticExtensions.every((ext) => exclusions.extensions.includes(ext));
+
+  async function handleToggleAllStatic() {
+    if (allStaticExcluded) {
+      await Promise.all(allStaticExtensions.map((ext) => includeExtension(sessionId, ext)));
+    } else {
+      await Promise.all(allStaticExtensions.map((ext) => excludeExtension(sessionId, ext)));
+    }
+    await refresh();
+  }
+
+  async function handleToggleExtension(ext: string) {
+    if (exclusions.extensions.includes(ext)) {
+      await includeExtension(sessionId, ext);
+    } else {
+      await excludeExtension(sessionId, ext);
+    }
+    await refresh();
+  }
+
+  async function handleExcludeMethodInput() {
+    const method = methodInput.trim().toUpperCase();
+    if (!method) return;
+    await excludeMethod(sessionId, method);
+    setMethodInput("");
+    await refresh();
+  }
+
+  async function handleIncludeMethod(method: string) {
+    await includeMethod(sessionId, method);
+    await refresh();
+  }
+
   async function handleExcludeEndpoint(ep: DiscoveredEndpoint) {
     await excludeEndpoint(sessionId, ep.method, ep.host, ep.path_template);
     await refresh();
   }
 
+  async function handleIncludeEndpoint(ep: { method: string; host: string; path_template: string }) {
+    await includeEndpoint(sessionId, ep.method, ep.host, ep.path_template);
+    await refresh();
+  }
+
   async function handleExcludeHost(host: string) {
     await excludeHost(sessionId, host);
+    await refresh();
+  }
+
+  async function handleIncludeHost(host: string) {
+    await includeHost(sessionId, host);
     await refresh();
   }
 
@@ -77,8 +139,9 @@ export function CapturedEndpointsPanel({ sessionId, refreshSignal, onClose }: Pr
       </div>
 
       <p className="hint">
-        Deselect a request to remove it and stop capturing further calls that match it, or
-        exclude an entire base URL. Exclusions apply for the rest of this crawl session.
+        Exclude a specific request or an entire base URL to hide it from this list and the
+        export — nothing is deleted, so an accidental exclusion can always be undone below.
+        Exclusions apply for the rest of this crawl session.
       </p>
 
       <div className="row">
@@ -95,11 +158,74 @@ export function CapturedEndpointsPanel({ sessionId, refreshSignal, onClose }: Pr
         {scanError && <span className="error">{scanError}</span>}
       </div>
 
+      <div className="row" style={{ flexWrap: "wrap" }}>
+        <button onClick={handleToggleAllStatic} disabled={allStaticExtensions.length === 0}>
+          {allStaticExcluded ? "Re-include static files" : "Exclude static files (css/html/js/images/fonts)"}
+        </button>
+        {Object.entries(extensionGroups).map(([group, exts]) => {
+          const allExcludedInGroup = exts.length > 0 && exts.every((ext) => exclusions.extensions.includes(ext));
+          return (
+            <button
+              key={group}
+              className={allExcludedInGroup ? "host-exclude-chip host-include-chip" : "host-exclude-chip"}
+              onClick={() => exts.forEach((ext) => handleToggleExtension(ext))}
+              title={exts.map((e) => `.${e}`).join(", ")}
+            >
+              {allExcludedInGroup ? `↩ ${group}` : `${group} ✕`}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="row" style={{ flexWrap: "wrap" }}>
+        <input
+          placeholder="Exclude method (e.g. OPTIONS)"
+          value={methodInput}
+          onChange={(e) => setMethodInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && handleExcludeMethodInput()}
+          style={{ width: 200 }}
+        />
+        <button onClick={handleExcludeMethodInput} disabled={!methodInput.trim()}>
+          Exclude method
+        </button>
+        {exclusions.methods.map((method) => (
+          <button key={method} className="host-exclude-chip host-include-chip" onClick={() => handleIncludeMethod(method)}>
+            ↩ Re-include {method}
+          </button>
+        ))}
+      </div>
+
       {hosts.length > 0 && (
         <div className="host-exclude-row">
           {hosts.map((host) => (
             <button key={host} className="host-exclude-chip" onClick={() => handleExcludeHost(host)}>
               Exclude all of {host} ✕
+            </button>
+          ))}
+        </div>
+      )}
+
+      {exclusions.hosts.length > 0 && (
+        <div className="host-exclude-row">
+          <span className="hint">Excluded hosts:</span>
+          {exclusions.hosts.map((host) => (
+            <button key={host} className="host-exclude-chip host-include-chip" onClick={() => handleIncludeHost(host)}>
+              ↩ Re-include {host}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {exclusions.endpoints.length > 0 && (
+        <div className="host-exclude-row">
+          <span className="hint">Excluded endpoints:</span>
+          {exclusions.endpoints.map((ep) => (
+            <button
+              key={`${ep.method}-${ep.host}-${ep.path_template}`}
+              className="host-exclude-chip host-include-chip"
+              onClick={() => handleIncludeEndpoint(ep)}
+            >
+              ↩ Re-include {ep.method} {ep.host}{ep.path_template}
             </button>
           ))}
         </div>
