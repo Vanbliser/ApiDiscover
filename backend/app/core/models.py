@@ -48,6 +48,16 @@ class CrawlEndpoint(BaseModel):
     query_params: list[str] = Field(default_factory=list)
     path_params: list[str] = Field(default_factory=list)
     example_request: CapturedRequest | None = None
+    # Every distinct request captured for this endpoint, deduplicated by
+    # actual query-parameter *values* (not just names) — unlike
+    # example_request (always just the first one seen), this preserves
+    # every different value combination hit during the crawl, e.g.
+    # GET /search?q=foo and GET /search?q=bar both survive here even though
+    # they collapse into one endpoint entry for query_params/OpenAPI's
+    # schema-oriented parameter list. Used by the Postman exporter, which is
+    # concrete-request-oriented and needs one item per real variant rather
+    # than one parameter schema per endpoint.
+    example_requests: list[CapturedRequest] = Field(default_factory=list)
     status_codes_seen: list[int] = Field(default_factory=list)
     hit_count: int = 1
     # "observed": seen during real click-through traffic.
