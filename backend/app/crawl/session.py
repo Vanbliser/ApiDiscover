@@ -3,12 +3,13 @@ from __future__ import annotations
 import shutil
 import uuid
 from pathlib import Path
-from typing import Callable
+from typing import Awaitable, Callable
 
 from urllib.parse import urlsplit
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
+from app.core import sessions_store
 from app.core.config import get_proxy_ca_cert_path
 from app.core.models import CapturedRequest, CrawlerStatus
 from app.crawl.capture_poller import CapturePoller
@@ -59,11 +60,18 @@ class CrawlSession:
     the browser/context/cookies never change.
     """
 
-    def __init__(self, session_id: str, proxy_server: str | None = None) -> None:
+    def __init__(self, session_id: str, proxy_server: str | None = None, save_session: bool = False) -> None:
         self.session_id = session_id
         self.status: CrawlerStatus = CrawlerStatus.IDLE
         self.captured: list[CapturedRequest] = []
         self._on_capture: Callable[[CapturedRequest], None] | None = None
+
+        # When True, the browser profile (cookies/login state/extensions) and the
+        # captured-request/exclusion history are persisted to disk (see
+        # sessions_store) and survive this session being stopped, so a later
+        # resume() picks up where this one left off instead of starting fresh.
+        self.save_session = save_session
+        self.profile_dir = sessions_store.profile_dir(session_id) if save_session else None
 
         # Session-scoped exclusions: hosts excluded entirely, specific
         # (method, host, normalized-path) endpoints excluded individually,
@@ -91,6 +99,7 @@ class CrawlSession:
             uploads_dir=str(self.uploads_dir),
             proxy_ca_cert_path=get_proxy_ca_cert_path(),
             proxy_server=proxy_server,
+            profile_dir=str(self.profile_dir) if self.profile_dir is not None else None,
         )
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
@@ -115,12 +124,21 @@ class CrawlSession:
     def proxy_server(self) -> str | None:
         return self.container.proxy_server
 
-    async def start(self, start_url: str, storage_state: dict | None = None) -> None:
+    async def _launch(self, start_url: str, pre_navigate: Callable[[], Awaitable[None]] | None = None) -> None:
+        """Shared by start() and resume(): creates scratch dirs, launches the
+        container, starts capture polling, connects Playwright, and navigates.
+        Callers are responsible for populating self.captured/exclusions first
+        if resuming — this method never touches them. `pre_navigate`, if given,
+        runs after the context/page exist but before goto() — e.g. to apply
+        cookies before the first page load, matching what start() did before
+        this method was split out of it."""
         # Must exist before `docker run` so the bind mount has something to
         # attach to — Docker would otherwise create it itself as root-owned,
         # which works too, but creating it explicitly keeps ownership/cleanup
         # unambiguous on the backend side.
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        if self.profile_dir is not None:
+            self.profile_dir.mkdir(parents=True, exist_ok=True)
         await self.container.start()
 
         # Capture starts polling immediately, before Playwright even attaches
@@ -138,13 +156,39 @@ class CrawlSession:
 
         # The container's Chrome starts with one default context/page already open.
         self._context = self._browser.contexts[0] if self._browser.contexts else await self._browser.new_context()
-        if storage_state:
-            await self._context.add_cookies(storage_state.get("cookies", []))
         self._page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+
+        if pre_navigate is not None:
+            await pre_navigate()
 
         await self._page.goto(start_url, wait_until="domcontentloaded")
 
         self.status = CrawlerStatus.MANUAL_CONTROL
+
+    async def start(self, start_url: str, storage_state: dict | None = None) -> None:
+        if self.save_session:
+            sessions_store.init_saved_session(self.session_id, start_url, self.proxy_server)
+
+        async def apply_storage_state() -> None:
+            if storage_state:
+                await self._context.add_cookies(storage_state.get("cookies", []))
+
+        await self._launch(start_url, pre_navigate=apply_storage_state)
+
+    async def resume(self, start_url: str) -> None:
+        """Re-launches a previously saved session: pre-populates captured requests
+        and exclusions from disk, then launches exactly like start() — the same
+        profile_dir gets bind-mounted again, so cookies/login state/extensions
+        Chrome persisted last time are already there."""
+        meta = sessions_store.load_meta(self.session_id)
+        if meta is None:
+            raise ValueError(f"no saved session {self.session_id}")
+        self.captured = sessions_store.load_captured(self.session_id)
+        self.excluded_hosts = set(meta.excluded_hosts)
+        self.excluded_endpoints = {tuple(e) for e in meta.excluded_endpoints}
+        self.excluded_extensions = set(meta.excluded_extensions)
+        self.excluded_methods = set(meta.excluded_methods)
+        await self._launch(start_url)
 
     def _is_excluded(self, method: str, url: str) -> bool:
         if method.upper() in self.excluded_methods:
@@ -170,29 +214,52 @@ class CrawlSession:
         """
         return [c for c in self.captured if not self._is_excluded(c.method, c.url)]
 
+    def _persist_meta_if_saved(self) -> None:
+        """Rewrites session.json with the current exclusion sets — called after
+        every exclude/include change and once more at stop(), for saved sessions
+        only. A no-op for ephemeral sessions."""
+        if not self.save_session:
+            return
+        meta = sessions_store.load_meta(self.session_id)
+        if meta is None:
+            return
+        meta.excluded_hosts = sorted(self.excluded_hosts)
+        meta.excluded_endpoints = [list(e) for e in sorted(self.excluded_endpoints)]
+        meta.excluded_extensions = sorted(self.excluded_extensions)
+        meta.excluded_methods = sorted(self.excluded_methods)
+        sessions_store.write_meta(meta)
+
     def exclude_host(self, host: str) -> None:
         self.excluded_hosts.add(host)
+        self._persist_meta_if_saved()
 
     def include_host(self, host: str) -> None:
         self.excluded_hosts.discard(host)
+        self._persist_meta_if_saved()
 
     def exclude_endpoint(self, method: str, host: str, path_template: str) -> None:
         self.excluded_endpoints.add((method.upper(), host, path_template))
+        self._persist_meta_if_saved()
 
     def include_endpoint(self, method: str, host: str, path_template: str) -> None:
         self.excluded_endpoints.discard((method.upper(), host, path_template))
+        self._persist_meta_if_saved()
 
     def exclude_extension(self, extension: str) -> None:
         self.excluded_extensions.add(extension.lower().lstrip("."))
+        self._persist_meta_if_saved()
 
     def include_extension(self, extension: str) -> None:
         self.excluded_extensions.discard(extension.lower().lstrip("."))
+        self._persist_meta_if_saved()
 
     def exclude_method(self, method: str) -> None:
         self.excluded_methods.add(method.upper())
+        self._persist_meta_if_saved()
 
     def include_method(self, method: str) -> None:
         self.excluded_methods.discard(method.upper())
+        self._persist_meta_if_saved()
 
     def _handle_capture(self, captured: CapturedRequest) -> None:
         # No resource_type filter here, unlike the old Playwright-based path
@@ -207,6 +274,8 @@ class CrawlSession:
         # excluded traffic, though, so the UI doesn't count requests the
         # user has asked to not see.
         self.captured.append(captured)
+        if self.save_session:
+            sessions_store.append_captured(self.session_id, captured)
         if self._is_excluded(captured.method, captured.url):
             return
         if self._on_capture:
@@ -233,6 +302,8 @@ class CrawlSession:
         kept: list[CapturedRequest] = []
         for cap in results:
             self.captured.append(cap)
+            if self.save_session:
+                sessions_store.append_captured(self.session_id, cap)
             if self._is_excluded(cap.method, cap.url):
                 continue
             kept.append(cap)
@@ -257,21 +328,44 @@ class CrawlSession:
         # container's own --rm teardown, so it needs its own cleanup —
         # uploaded files must not outlive the session.
         shutil.rmtree(self.uploads_dir, ignore_errors=True)
+        # profile_dir, unlike uploads_dir, is deliberately NOT removed here for
+        # saved sessions — it's the whole point of save_session, so a later
+        # resume() can bind-mount the same Chrome profile back in.
+        if self.save_session:
+            self._persist_meta_if_saved()
         self.status = CrawlerStatus.FINISHED
 
 
 _sessions: dict[str, CrawlSession] = {}
 
 
-def create_session(proxy_server: str | None = None) -> CrawlSession:
+def create_session(proxy_server: str | None = None, save_session: bool = False) -> CrawlSession:
     session_id = str(uuid.uuid4())
-    session = CrawlSession(session_id, proxy_server=proxy_server)
+    session = CrawlSession(session_id, proxy_server=proxy_server, save_session=save_session)
+    _sessions[session_id] = session
+    return session
+
+
+def create_resumed_session(session_id: str, proxy_server: str | None) -> CrawlSession:
+    """Reuses a saved session's own session_id rather than minting a new one, so
+    there's one profile dir / one capture history per logical saved session, not
+    a fork per resume. Raises if that session is already active (e.g. resumed
+    from another tab) — _sessions is the single source of truth for "is a
+    container currently running for this id," so this check is sufficient
+    without any extra locking."""
+    if session_id in _sessions:
+        raise ValueError(f"session {session_id} is already active")
+    session = CrawlSession(session_id, proxy_server=proxy_server, save_session=True)
     _sessions[session_id] = session
     return session
 
 
 def get_session(session_id: str) -> CrawlSession | None:
     return _sessions.get(session_id)
+
+
+def is_session_active(session_id: str) -> bool:
+    return session_id in _sessions
 
 
 def remove_session(session_id: str) -> None:

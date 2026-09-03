@@ -88,9 +88,15 @@ class VncBrowserContainer:
         uploads_dir: str | None = None,
         proxy_ca_cert_path: str | None = None,
         proxy_server: str | None = None,
+        profile_dir: str | None = None,
     ) -> None:
         self.container_name = container_name
         self.uploads_dir = uploads_dir
+        # Host-side directory to bind-mount as Chrome's --user-data-dir, only set
+        # for sessions launched with save_session=True (see CrawlSession). Left
+        # unset for ephemeral sessions so their container behaves exactly as
+        # before — no mount, no --user-data-dir flag (see start-browser.sh).
+        self.profile_dir = profile_dir
         # Host-side path to a PEM CA cert (e.g. Burp's) to trust inside the
         # container, if the user has uploaded one in Settings — see
         # start-browser.sh, which imports it into NSS before Chrome launches.
@@ -144,6 +150,8 @@ class VncBrowserContainer:
                     args += ["-v", f"{self.uploads_dir}:/root/Uploads"]
                 if self.proxy_ca_cert_path is not None:
                     args += ["-v", f"{self.proxy_ca_cert_path}:/etc/proxy-ca/ca.pem:ro"]
+                if self.profile_dir is not None:
+                    args += ["-v", f"{self.profile_dir}:/root/.chrome-profile"]
                 args.append(VNC_BROWSER_IMAGE)
 
                 proc = await asyncio.create_subprocess_exec(

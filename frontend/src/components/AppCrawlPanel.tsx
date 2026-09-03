@@ -1,5 +1,14 @@
-import { useRef, useState } from "react";
-import { checkProxyReachable, startCrawl, stopCrawl, uploadFile } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import {
+  checkProxyReachable,
+  deleteSavedSession,
+  listSavedSessions,
+  resumeSession,
+  SavedSession,
+  startCrawl,
+  stopCrawl,
+  uploadFile,
+} from "../lib/api";
 import { BrowserViewer } from "./BrowserViewer";
 import { CapturedEndpointsPanel } from "./CapturedEndpointsPanel";
 
@@ -30,6 +39,20 @@ export function AppCrawlPanel({ initialUrl }: Props) {
   const [checkingProxy, setCheckingProxy] = useState(false);
   const [activeProxy, setActiveProxy] = useState<string | null>(null);
 
+  const [saveSession, setSaveSession] = useState(false);
+  const [savedSessions, setSavedSessions] = useState<SavedSession[]>([]);
+  const [resumingId, setResumingId] = useState<string | null>(null);
+
+  const hasSession = !!sessionId && !!novncUrl;
+
+  function refreshSavedSessions() {
+    listSavedSessions().then(setSavedSessions).catch(() => {});
+  }
+
+  useEffect(() => {
+    if (!hasSession) refreshSavedSessions();
+  }, [hasSession]);
+
   async function handleCheckProxy() {
     setCheckingProxy(true);
     setProxyCheck(null);
@@ -49,7 +72,7 @@ export function AppCrawlPanel({ initialUrl }: Props) {
     setError(null);
     try {
       const proxyServer = useProxy && proxyHost && proxyPort ? `${proxyHost}:${proxyPort}` : undefined;
-      const { session_id, novnc_url } = await startCrawl(url, proxyServer);
+      const { session_id, novnc_url } = await startCrawl(url, proxyServer, saveSession);
       setSessionId(session_id);
       setNovncUrl(novnc_url);
       setCaptureCount(0);
@@ -62,6 +85,32 @@ export function AppCrawlPanel({ initialUrl }: Props) {
     }
   }
 
+  async function handleResume(id: string) {
+    setResumingId(id);
+    setError(null);
+    try {
+      const { session_id, novnc_url, captured_count } = await resumeSession(id);
+      setSessionId(session_id);
+      setNovncUrl(novnc_url);
+      setCaptureCount(captured_count);
+      setShowCaptured(false);
+      setActiveProxy(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setResumingId(null);
+    }
+  }
+
+  async function handleDeleteSaved(id: string) {
+    try {
+      await deleteSavedSession(id);
+      setSavedSessions((s) => s.filter((sess) => sess.session_id !== id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function handleStop() {
     if (!sessionId) return;
     await stopCrawl(sessionId);
@@ -69,6 +118,7 @@ export function AppCrawlPanel({ initialUrl }: Props) {
     setNovncUrl(null);
     setShowCaptured(false);
     setActiveProxy(null);
+    refreshSavedSessions();
   }
 
   function handleCapture() {
@@ -94,8 +144,6 @@ export function AppCrawlPanel({ initialUrl }: Props) {
     }
   }
 
-  const hasSession = !!sessionId && !!novncUrl;
-
   return (
     <div className="panel">
       <h2>App Crawl</h2>
@@ -111,6 +159,13 @@ export function AppCrawlPanel({ initialUrl }: Props) {
             <button onClick={handleStart} disabled={loading}>
               {loading ? "Launching browser..." : "Launch browser"}
             </button>
+          </div>
+
+          <div className="row" style={{ marginTop: 8 }}>
+            <label>
+              <input type="checkbox" checked={saveSession} onChange={(e) => setSaveSession(e.target.checked)} />{" "}
+              Save this session for later (keeps cookies/login state and captured APIs after you stop)
+            </label>
           </div>
 
           <div className="row" style={{ marginTop: 8 }}>
@@ -148,6 +203,29 @@ export function AppCrawlPanel({ initialUrl }: Props) {
                 crawl and launch a new one. See Settings for the CA certificate step and address
                 guidance for different setups.
               </p>
+            </div>
+          )}
+
+          {savedSessions.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <h3>Saved sessions</h3>
+              {savedSessions.map((s) => (
+                <div className="row" key={s.session_id} style={{ marginTop: 4 }}>
+                  <span>{s.label}</span>
+                  <span className="hint">{s.start_url}</span>
+                  <span className="hint">{s.endpoint_count} requests captured</span>
+                  <div className="spacer" />
+                  <button
+                    onClick={() => handleResume(s.session_id)}
+                    disabled={s.active || resumingId === s.session_id}
+                  >
+                    {s.active ? "Active" : resumingId === s.session_id ? "Resuming..." : "Resume"}
+                  </button>
+                  <button onClick={() => handleDeleteSaved(s.session_id)} disabled={s.active}>
+                    Delete
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </>

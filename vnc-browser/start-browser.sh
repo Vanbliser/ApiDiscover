@@ -35,6 +35,14 @@ certutil -A -d "sql:$HOME/.pki/nssdb" -n mitmproxy-capture-ca -t "C,," -i "$MITM
   && echo "start-browser: imported mitmproxy capture CA into NSS trust store" \
   || echo "start-browser: failed to import mitmproxy CA (continuing without it)" >&2
 
+# Only present for sessions launched with save_session=True (see container.py's
+# conditional bind mount) — Chrome's default profile path is used otherwise, so
+# ephemeral sessions are byte-for-byte unaffected by this.
+CHROME_PROFILE_FLAGS=()
+if [ -d /root/.chrome-profile ]; then
+  CHROME_PROFILE_FLAGS=(--user-data-dir=/root/.chrome-profile)
+fi
+
 exec "$CHROME_BIN" \
   --no-sandbox \
   --disable-gpu \
@@ -47,4 +55,5 @@ exec "$CHROME_BIN" \
   --no-first-run \
   --no-default-browser-check \
   --proxy-server=127.0.0.1:9224 \
+  "${CHROME_PROFILE_FLAGS[@]}" \
   about:blank

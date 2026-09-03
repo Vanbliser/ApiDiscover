@@ -47,12 +47,13 @@ export async function upsertProvider(
 
 export async function startCrawl(
   startUrl: string,
-  proxyServer?: string
+  proxyServer?: string,
+  saveSession: boolean = false
 ): Promise<{ session_id: string; novnc_url: string }> {
   const res = await fetch(`${API_BASE}/api/crawl/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ start_url: startUrl, proxy_server: proxyServer || null }),
+    body: JSON.stringify({ start_url: startUrl, proxy_server: proxyServer || null, save_session: saveSession }),
   });
   if (!res.ok) throw new Error(`start crawl failed: ${res.status}`);
   return res.json();
@@ -60,6 +61,46 @@ export async function startCrawl(
 
 export async function stopCrawl(sessionId: string): Promise<void> {
   await fetch(`${API_BASE}/api/crawl/${sessionId}/stop`, { method: "POST" });
+}
+
+export interface SavedSession {
+  session_id: string;
+  label: string;
+  start_url: string;
+  created_at: string;
+  updated_at: string;
+  endpoint_count: number;
+  active: boolean;
+}
+
+export async function listSavedSessions(): Promise<SavedSession[]> {
+  const res = await fetch(`${API_BASE}/api/crawl/sessions`);
+  if (!res.ok) throw new Error(`failed to list saved sessions: ${res.status}`);
+  const data = await res.json();
+  return data.sessions ?? [];
+}
+
+export async function resumeSession(
+  sessionId: string
+): Promise<{ session_id: string; novnc_url: string; captured_count: number }> {
+  const res = await fetch(`${API_BASE}/api/crawl/sessions/${sessionId}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail ?? `resume failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteSavedSession(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/crawl/sessions/${sessionId}`, { method: "DELETE" });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail ?? `delete failed: ${res.status}`);
+  }
 }
 
 export interface DiscoveredEndpoint {

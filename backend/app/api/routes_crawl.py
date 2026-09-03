@@ -6,8 +6,16 @@ import os
 from fastapi import APIRouter, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
+from app.core import sessions_store
 from app.crawl.container import check_proxy_reachable
-from app.crawl.session import STATIC_FILE_EXTENSION_GROUPS, create_session, get_session, remove_session
+from app.crawl.session import (
+    STATIC_FILE_EXTENSION_GROUPS,
+    create_resumed_session,
+    create_session,
+    get_session,
+    is_session_active,
+    remove_session,
+)
 from app.crawl.walker import DomWalker
 from app.export.normalize import normalize_captures
 from app.export.openapi import build_openapi_spec
@@ -27,6 +35,16 @@ class StartCrawlRequest(BaseModel):
     # session's browser traffic through, decided here at launch since
     # Chrome's --proxy-server can't be changed on a running browser — see
     # VncBrowserContainer.proxy_server.
+    proxy_server: str | None = None
+    # When True, the browser profile and captured-request/exclusion history
+    # survive this session being stopped, resumable later via
+    # POST /sessions/{id}/resume — see CrawlSession.save_session.
+    save_session: bool = False
+
+
+class ResumeSessionRequest(BaseModel):
+    # Optional override of the proxy this saved session originally used —
+    # defaults to whatever was saved if omitted.
     proxy_server: str | None = None
 
 
@@ -79,9 +97,65 @@ async def check_proxy(req: ProxyCheckRequest):
 
 @router.post("/start")
 async def start_crawl(req: StartCrawlRequest):
-    session = create_session(proxy_server=req.proxy_server)
+    session = create_session(proxy_server=req.proxy_server, save_session=req.save_session)
     await session.start(req.start_url)
     return {"session_id": session.session_id, "novnc_url": session.novnc_url}
+
+
+@router.get("/sessions")
+async def list_sessions():
+    """
+    Saved sessions available to resume, scanned from disk. `endpoint_count` is
+    a raw captured-request count, not a deduplicated endpoint count — computing
+    the real thing would mean normalizing every saved session's full history on
+    every list call, which is wasted work for a view that's just a picker.
+    `active` lets the frontend grey out "Resume" instead of letting it fail.
+    """
+    metas = sessions_store.list_saved_sessions()
+    return {
+        "sessions": [
+            {
+                "session_id": m.session_id,
+                "label": m.label,
+                "start_url": m.start_url,
+                "created_at": m.created_at,
+                "updated_at": m.updated_at,
+                "endpoint_count": sessions_store.count_captured(m.session_id),
+                "active": is_session_active(m.session_id),
+            }
+            for m in metas
+        ]
+    }
+
+
+@router.post("/sessions/{session_id}/resume")
+async def resume_session(session_id: str, req: ResumeSessionRequest | None = None):
+    if is_session_active(session_id):
+        raise HTTPException(status_code=409, detail="session is already active")
+    meta = sessions_store.load_meta(session_id)
+    if meta is None:
+        raise HTTPException(status_code=404, detail="saved session not found")
+
+    proxy_server = (req.proxy_server if req else None) or meta.proxy_server
+    session = create_resumed_session(session_id, proxy_server=proxy_server)
+    try:
+        await session.resume(meta.start_url)
+    except Exception:
+        remove_session(session_id)
+        raise
+    return {
+        "session_id": session.session_id,
+        "novnc_url": session.novnc_url,
+        "captured_count": len(session.captured),
+    }
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    if is_session_active(session_id):
+        raise HTTPException(status_code=409, detail="cannot delete an active session; stop it first")
+    sessions_store.delete_saved_session(session_id)
+    return {"status": "deleted"}
 
 
 @router.get("/{session_id}/endpoints")
