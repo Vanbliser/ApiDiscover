@@ -3,8 +3,14 @@
 # backend, frontend, and ensures the VNC browser Docker image exists.
 #
 # Usage:
-#   ./run.sh            start everything
-#   ./run.sh --rebuild   also rebuild the vnc-browser Docker image
+#   ./run.sh                                start everything on defaults
+#   ./run.sh --rebuild                      also rebuild the vnc-browser Docker image
+#   ./run.sh --backend-port 9000            run the backend on a custom port
+#   ./run.sh --frontend-port 3000           run the frontend on a custom port
+#   ./run.sh --expose                       bind the frontend to 0.0.0.0 (reachable from other machines)
+#   ./run.sh --expose --frontend-port 3000  expose the frontend on a custom port
+#
+# Env vars (overridden by the flags above): BACKEND_PORT, FRONTEND_PORT, HOST
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,9 +20,56 @@ VNC_DIR="$ROOT_DIR/vnc-browser"
 LOG_DIR="$ROOT_DIR/.run-logs"
 VNC_IMAGE="apidiscover-vnc-browser"
 
+BACKEND_PORT="${BACKEND_PORT:-8000}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+FRONTEND_HOST="${HOST:-localhost}"
 REBUILD_IMAGE=false
-if [[ "${1:-}" == "--rebuild" ]]; then
-  REBUILD_IMAGE=true
+
+usage() {
+  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --rebuild)
+      REBUILD_IMAGE=true
+      shift
+      ;;
+    --backend-port)
+      BACKEND_PORT="$2"
+      shift 2
+      ;;
+    --backend-port=*)
+      BACKEND_PORT="${1#*=}"
+      shift
+      ;;
+    --frontend-port)
+      FRONTEND_PORT="$2"
+      shift 2
+      ;;
+    --frontend-port=*)
+      FRONTEND_PORT="${1#*=}"
+      shift
+      ;;
+    --expose)
+      FRONTEND_HOST="0.0.0.0"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
+
+if ! [[ "$BACKEND_PORT" =~ ^[0-9]+$ ]] || ! [[ "$FRONTEND_PORT" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: ports must be numeric (got backend=$BACKEND_PORT frontend=$FRONTEND_PORT)" >&2
+  exit 1
 fi
 
 mkdir -p "$LOG_DIR"
@@ -93,14 +146,19 @@ echo "[ok] Frontend dependencies ready"
 # --- Start backend ---
 cd "$BACKEND_DIR"
 source .venv/bin/activate
-echo "Starting backend on http://localhost:8000 ..."
-uvicorn app.main:app --reload --port 8000 > "$LOG_DIR/backend.log" 2>&1 &
+echo "Starting backend on http://localhost:$BACKEND_PORT ..."
+FRONTEND_PORT="$FRONTEND_PORT" uvicorn app.main:app --reload --port "$BACKEND_PORT" > "$LOG_DIR/backend.log" 2>&1 &
 BACKEND_PID=$!
 
 # --- Start frontend ---
 cd "$FRONTEND_DIR"
-echo "Starting frontend on http://localhost:5173 ..."
-npm run dev -- --host 0.0.0.0 --port 5173 > "$LOG_DIR/frontend.log" 2>&1 &
+DISPLAY_HOST="$FRONTEND_HOST"
+[[ "$DISPLAY_HOST" == "0.0.0.0" ]] && DISPLAY_HOST="localhost"
+echo "Starting frontend on http://$FRONTEND_HOST:$FRONTEND_PORT ..."
+if [[ "$FRONTEND_HOST" == "0.0.0.0" ]]; then
+  echo "  (exposed: reachable from other machines on your network)"
+fi
+VITE_BACKEND_PORT="$BACKEND_PORT" npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
 sleep 2
@@ -117,8 +175,8 @@ fi
 echo ""
 echo "================================================"
 echo " ApiDiscover is running:"
-echo "   Frontend: http://localhost:5173"
-echo "   Backend:  http://localhost:8000"
+echo "   Frontend: http://$DISPLAY_HOST:$FRONTEND_PORT"
+echo "   Backend:  http://localhost:$BACKEND_PORT"
 echo ""
 echo " Logs: $LOG_DIR/backend.log, $LOG_DIR/frontend.log"
 echo " Press Ctrl+C to stop everything."

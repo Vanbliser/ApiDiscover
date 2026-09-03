@@ -145,9 +145,16 @@ when a session stops (`--rm`).
 ### One command: run.sh
 
 ```bash
-./run.sh              # start everything
-./run.sh --rebuild    # also rebuild the vnc-browser Docker image
+./run.sh                                # start everything on defaults (backend 8000, frontend 5173, localhost)
+./run.sh --rebuild                      # also rebuild the vnc-browser Docker image
+./run.sh --backend-port 9000            # run the backend on a custom port
+./run.sh --frontend-port 3000           # run the frontend on a custom port
+./run.sh --expose                       # bind the frontend to 0.0.0.0 (reachable from other machines)
+./run.sh --expose --frontend-port 3000  # expose the frontend on a custom port
 ```
+
+Ports and bind address can also be set via env vars (`BACKEND_PORT`,
+`FRONTEND_PORT`, `HOST=0.0.0.0`), which the flags above override.
 
 What it does, in order:
 
@@ -159,9 +166,13 @@ What it does, in order:
 3. Creates the backend virtualenv (`backend/.venv`) and installs
    `requirements.txt` if not already done.
 4. Runs `npm install` for the frontend if `node_modules` doesn't exist yet.
-5. Starts the backend (`uvicorn`, port 8000) and frontend (`vite`, port 5173)
-   in the background, logging to `.run-logs/backend.log` and
-   `.run-logs/frontend.log`.
+5. Starts the backend (`uvicorn`, port 8000 by default) and frontend (`vite`,
+   port 5173 by default) in the background, logging to
+   `.run-logs/backend.log` and `.run-logs/frontend.log`. The frontend is told
+   the backend's port via `VITE_BACKEND_PORT`, and the backend's CORS policy
+   is told the frontend's port via `FRONTEND_PORT`, so custom ports work end
+   to end. By default the frontend binds to `localhost` only; `--expose`
+   binds it to `0.0.0.0` so other machines on your network can reach it.
 6. Prints the URLs and waits. **Ctrl+C** stops both processes and stops any
    crawl-session Docker containers left running (`apidiscover-crawl-*`).
 
@@ -505,17 +516,21 @@ Interactive docs (Swagger UI) are always available at
   sees this cert; it only ever trusts mitmproxy's own CA
   (`~/.mitmproxy/mitmproxy-ca-cert.pem`, generated fresh per container),
   since mitmproxy is the only thing Chrome talks to directly now.
-- **Ports** — backend `8000`, frontend `5173`, noVNC, CDP, and the capture
-  API port per session are chosen dynamically by the OS and are not fixed.
+- **Ports** — backend defaults to `8000`, frontend to `5173`; both are
+  configurable via `run.sh --backend-port` / `--frontend-port` (see
+  [One command: run.sh](#one-command-runsh)). noVNC, CDP, and the capture API
+  port per session are chosen dynamically by the OS and are not fixed.
 - **Frontend → backend URL** — derived at runtime from
-  `window.location.hostname` in [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
-  (assumes the backend is always on port `8000` on that same host), so the app
-  works whether you load it via `localhost`, `127.0.0.1`, or a LAN IP without
-  any config change. The backend's CORS policy
-  ([backend/app/main.py](backend/app/main.py)) matches this — it accepts
-  those same origin forms on port `5173` via `allow_origin_regex`, since
-  `localhost` and `127.0.0.1` are distinct browser origins even though they
-  resolve to the same machine.
+  `window.location.hostname` plus `import.meta.env.VITE_BACKEND_PORT` in
+  [frontend/src/lib/api.ts](frontend/src/lib/api.ts) (`run.sh` sets
+  `VITE_BACKEND_PORT` to whatever `--backend-port` resolves to; defaults to
+  `8000` if unset), so the app works whether you load it via `localhost`,
+  `127.0.0.1`, or a LAN IP without any config change. The backend's CORS
+  policy ([backend/app/main.py](backend/app/main.py)) matches this — it
+  accepts those same origin forms on the frontend's port (read from the
+  `FRONTEND_PORT` env var `run.sh` sets, default `5173`) via
+  `allow_origin_regex`, since `localhost` and `127.0.0.1` are distinct
+  browser origins even though they resolve to the same machine.
 
 ## Troubleshooting
 
