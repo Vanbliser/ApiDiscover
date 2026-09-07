@@ -10,8 +10,12 @@ from app.api.routes_recon import router as recon_router
 
 app = FastAPI(title="ApiDiscover")
 
-# The frontend's dev port is configurable (see run.sh --frontend-port), so the
-# allowed origin pattern must follow it rather than assume Vite's default.
+# The frontend proxies /api to the backend (see frontend/vite.config.ts), so
+# this normally doesn't matter for the app itself — it's here for anyone
+# hitting the backend directly (e.g. /docs) from a browser on a different
+# origin. The frontend's dev port is configurable (see run.sh
+# --frontend-port), so the allowed origin pattern follows it rather than
+# assume Vite's default.
 _frontend_port = os.environ.get("FRONTEND_PORT", "5173")
 
 app.add_middleware(

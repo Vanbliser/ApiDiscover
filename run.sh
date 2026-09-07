@@ -158,7 +158,7 @@ echo "Starting frontend on http://$FRONTEND_HOST:$FRONTEND_PORT ..."
 if [[ "$FRONTEND_HOST" == "0.0.0.0" ]]; then
   echo "  (exposed: reachable from other machines on your network)"
 fi
-VITE_BACKEND_PORT="$BACKEND_PORT" npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$LOG_DIR/frontend.log" 2>&1 &
+BACKEND_PORT="$BACKEND_PORT" npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$LOG_DIR/frontend.log" 2>&1 &
 FRONTEND_PID=$!
 
 sleep 2
@@ -176,7 +176,8 @@ echo ""
 echo "================================================"
 echo " ApiDiscover is running:"
 echo "   Frontend: http://$DISPLAY_HOST:$FRONTEND_PORT"
-echo "   Backend:  http://localhost:$BACKEND_PORT"
+echo "   Backend:  http://localhost:$BACKEND_PORT (loopback-only; the frontend"
+echo "             proxies /api to it, see frontend/vite.config.ts)"
 echo ""
 echo " Logs: $LOG_DIR/backend.log, $LOG_DIR/frontend.log"
 echo " Press Ctrl+C to stop everything."

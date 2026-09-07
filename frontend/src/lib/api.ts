@@ -1,10 +1,7 @@
-// Derive the backend host from wherever this page was actually loaded from
-// (localhost vs 127.0.0.1 vs a LAN IP are all distinct browser origins) —
-// hardcoding "localhost" here broke access from any other loopback form.
-// The backend port is injected at build/dev time via VITE_BACKEND_PORT so
-// run.sh can point the frontend at a non-default backend port.
-const BACKEND_PORT = import.meta.env.VITE_BACKEND_PORT || "8000";
-const API_BASE = `${window.location.protocol}//${window.location.hostname}:${BACKEND_PORT}`;
+// Requests go to this page's own origin — Vite's dev server proxies /api
+// (see vite.config.ts) to the backend, which stays bound to 127.0.0.1 and is
+// never exposed directly, even when the frontend is reachable externally.
+const API_BASE = "";
 
 export interface LiveHost {
   hostname: string;
@@ -24,8 +21,12 @@ export interface ProviderConfig {
   extra: Record<string, string>;
 }
 
+function wsBase(): string {
+  return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
+}
+
 export function reconStreamUrl(): string {
-  return `${API_BASE.replace("http", "ws")}/api/recon/stream`;
+  return `${wsBase()}/api/recon/stream`;
 }
 
 export async function listProviders(): Promise<ProviderConfig[]> {
@@ -283,7 +284,7 @@ export async function exportCrawl(
 }
 
 export function crawlStreamUrl(sessionId: string): string {
-  return `${API_BASE.replace("http", "ws")}/api/crawl/${sessionId}/stream`;
+  return `${wsBase()}/api/crawl/${sessionId}/stream`;
 }
 
 export function downloadJson(data: object, filename: string): void {
