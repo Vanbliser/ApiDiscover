@@ -4,11 +4,11 @@ import {
   deleteSavedSession,
   listSavedSessions,
   resumeSession,
-  SavedSession,
   startCrawl,
   stopCrawl,
   uploadFile,
 } from "../lib/api";
+import type { SavedSession } from "../lib/api";
 import { BrowserViewer } from "./BrowserViewer";
 import { CapturedEndpointsPanel } from "./CapturedEndpointsPanel";
 
