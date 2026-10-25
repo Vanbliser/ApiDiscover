@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from fastapi import APIRouter, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from app.core import sessions_store
@@ -16,6 +16,7 @@ from app.crawl.session import (
     is_session_active,
     remove_session,
 )
+from app.crawl.vnc_proxy import forward_http, relay_websocket
 from app.crawl.walker import DomWalker
 from app.export.normalize import normalize_captures
 from app.export.openapi import build_openapi_spec
@@ -351,6 +352,32 @@ async def stop_crawl(session_id: str):
     await session.stop()
     remove_session(session_id)
     return {"status": "stopped"}
+
+
+def _vnc_port(session_id: str) -> int | None:
+    session = get_session(session_id)
+    if session is None:
+        return None
+    return session.container.novnc_port
+
+
+@router.api_route("/{session_id}/vnc/{path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+async def vnc_http(session_id: str, path: str, request: Request):
+    """noVNC's HTML/JS/CSS, relayed from the session's loopback-only web server."""
+    port = _vnc_port(session_id)
+    if port is None:
+        raise HTTPException(status_code=404, detail="session is not active")
+    return await forward_http(request, port, path)
+
+
+@router.websocket("/{session_id}/vnc/{path:path}")
+async def vnc_ws(websocket: WebSocket, session_id: str, path: str):
+    """The RFB pixel/input stream between the viewer and the session's browser."""
+    port = _vnc_port(session_id)
+    if port is None:
+        await websocket.close(code=1008)
+        return
+    await relay_websocket(websocket, port, path)
 
 
 @router.websocket("/{session_id}/stream")

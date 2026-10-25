@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes_crawl import router as crawl_router
-from app.api.routes_recon import router as recon_router
+from app.api.routes_settings import router as settings_router
+from app.frontend_static import mount_frontend
 
 app = FastAPI(title="ApiDiscover")
 
@@ -29,10 +31,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(recon_router)
+app.include_router(settings_router)
 app.include_router(crawl_router)
 
 
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+# Production: serve the built frontend (frontend/dist, from `npm run build`)
+# on the same origin as /api. Skipped if nothing has been built (dev mode).
+_frontend_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+if _frontend_dist.is_dir():
+    mount_frontend(app, _frontend_dist)

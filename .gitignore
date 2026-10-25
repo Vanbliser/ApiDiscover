@@ -9,3 +9,4 @@ frontend/dist/
 *.log
 .run-logs/
 .DS_Store
+.pytest_cache/

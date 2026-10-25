@@ -1,22 +1,14 @@
 # ApiDiscover
 
 An API endpoint discovery tool built for an **external, attacker's-eye view** of your
-attack surface — rather than relying solely on internal Postman collections
-(which only document what someone already knew to write down), ApiDiscover
-finds what's actually reachable from outside your network perimeter.
+application. It finds the endpoints that ypur applications calls and packages them into an OpenAPI spec and a Postman
+collection.
 
-It has two complementary modes:
-
-- **Domain Recon** — given a root domain, discover subdomains/hosts via passive
-  OSINT, active DNS brute-force, and third-party attack-surface APIs (Shodan,
-  Censys, SecurityTrails, VirusTotal, Wallarm).
-- **App Crawl** — given a single web app URL, launch a real browser, let a human
-  drive it through login/bot-challenges, then autonomously click through the
-  app while capturing every API call it triggers — exported as an OpenAPI spec
-  and a Postman collection.
-
-The two modes chain together: a host discovered by Domain Recon can be sent
-straight into App Crawl with one click.
+The app is built around one mode, **App Crawl**: given a single web app URL,
+it launches a real browser, lets a human drive it through login and
+bot-challenges, then autonomously clicks through the app while capturing every
+API call it triggers. The results are exported as an OpenAPI spec and a Postman
+collection.
 
 ---
 
@@ -29,7 +21,8 @@ straight into App Crawl with one click.
 That's it for day-to-day use — see [Running the app](#running-the-app) for
 what this does and what to do if something's not already installed.
 
-Open **http://localhost:5173** once it prints that the servers are up.
+Open **http://localhost:5173** once it prints that the servers are up. With
+`--prod`, open the single port it prints instead (see [Production mode](#production-mode---prod)).
 
 ---
 
@@ -39,14 +32,15 @@ Open **http://localhost:5173** once it prints that the servers are up.
 - [Running the app](#running-the-app)
   - [One command: run.sh](#one-command-runsh)
   - [Running each piece manually](#running-each-piece-manually)
+  - [Running locally and on a server](#running-locally-and-on-a-server)
 - [Features](#features)
-  - [Domain Recon](#domain-recon)
   - [App Crawl](#app-crawl)
   - [Exports](#exports)
 - [How the remote browser works](#how-the-remote-browser-works)
 - [Project layout](#project-layout)
 - [Backend API reference](#backend-api-reference)
 - [Configuration](#configuration)
+- [Tests](#tests)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -55,35 +49,27 @@ Open **http://localhost:5173** once it prints that the servers are up.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  Frontend  (React + TypeScript, Vite)  —  http://localhost:5173      │
-│                                                                        │
-│   Home (always mounted)                   Settings (always mounted)   │
-│   ┌─────────────┐  ┌─────────────────┐   ┌──────────────────────┐    │
-│   │ Recon Panel │  │ App Crawl Panel │   │ Recon provider config │    │
-│   │ - live       │  │  - noVNC iframe │   │ (Shodan/Censys/...)   │    │
-│   │   streaming  │  │  - live capture │   └──────────────────────┘    │
-│   │ - CSV export │  │    review panel │                               │
-│   └─────────────┘  └─────────────────┘                               │
-│   Both views stay mounted (CSS-hidden, not unmounted) so switching   │
-│   tabs never resets an in-progress recon run or crawl session.       │
-└───────────────────────────┬────────────────────────────────────────┘
-                             │ REST + WebSocket
-┌───────────────────────────┴────────────────────────────────────────┐
-│  Backend  (FastAPI, Python)  —  http://localhost:8000               │
-│                                                                        │
-│  recon/                          crawl/                              │
-│   - passive.py   (crt.sh)         - session.py  (Playwright, CDP)    │
-│   - active.py    (DNS bruteforce) - container.py (Docker lifecycle)  │
-│   - third_party.py (Shodan, etc)  - walker.py   (autonomous crawler) │
-│   - wallarm.py   (paginated POST)                                    │
-│   - orchestrator.py (fan-out + liveness probe)                       │
-│                                                                        │
-│  export/                          core/                              │
-│   - normalize.py (dedupe/template)  - models.py  (shared schemas)    │
-│   - openapi.py   (OpenAPI 3.0.3)    - config.py  (encrypted secrets) │
-│   - postman.py   (Postman v2.1)                                      │
-└───────────────────────────┬────────────────────────────────────────┘
-                             │ docker run (one container per crawl session)
+│  Frontend  (React + TypeScript, Vite)  —  one origin for UI and /api │
+│                                                                      │
+│   App Crawl panel                    Settings                        │
+│   - noVNC viewer (iframe, loaded     - Intercepting-proxy CA upload  │
+│     through the backend's /vnc proxy)  and setup guide               │
+│   - live capture review panel                                        │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            │ REST + WebSocket, same origin (/api)
+┌───────────────────────────┴──────────────────────────────────────────┐
+│  Backend  (FastAPI, Python)  —  serves /api, and the built UI in --prod │
+│                                                                      │
+│  crawl/                              export/                         │
+│   - session.py    (Playwright, CDP)    - normalize.py (dedupe/template)│
+│   - container.py  (Docker lifecycle)   - openapi.py   (OpenAPI 3.0.3)│
+│   - walker.py     (autonomous crawl)   - postman.py   (Postman v2.1) │
+│   - vnc_proxy.py  (noVNC relay)                                      │
+│   - capture_poller.py, js_scan.py                                    │
+│                                                                      │
+│  core/   models.py, config.py, sessions_store.py (saved sessions)    │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            │ docker run (one container per crawl session)
 ┌───────────────────────────┴────────────────────────────────────────┐
 │  vnc-browser image (Docker)                                          │
 │                                                                        │
@@ -103,7 +89,8 @@ Open **http://localhost:5173** once it prints that the servers are up.
 │        │            (e.g. Burp Suite) if configured at launch        │
 │        │                                                              │
 │        └── x11vnc (VNC server) ── websockify + noVNC ── :6080        │
-│             (embedded directly in the frontend via an iframe)        │
+│             (loopback only; the viewer iframe reaches it through     │
+│              the backend's /api/crawl/{id}/vnc proxy)                 │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -111,29 +98,8 @@ Open **http://localhost:5173** once it prints that the servers are up.
 login step, and login flows are often deliberately hostile to automation
 (CAPTCHAs, bot-detection, MFA). Rather than trying to script around that,
 ApiDiscover gives you the *actual* browser to drive by hand for that part —
-over a real VNC connection, so mouse/keyboard input is genuine X11 input, not
-forwarded through a fragile CDP input-injection layer. Once you're past login,
-you hand control to the autonomous crawler, which drives the exact same
-browser/session/cookies via the Chrome DevTools Protocol (CDP). If the crawler
-gets stuck (a multi-step form, an unexpected page), it pauses and hands
-control back to you — the same VNC session, no separate mode.
+over a real VNC connection, so mouse/keyboard input is genuine X11 input. Once you're past login, you hand control to the autonomous crawler, which drives the exact same browser/session/cookies via the Chrome DevTools Protocol (CDP). If the crawler gets stuck (a multi-step form, an unexpected page), it pauses and hands control back to you — the same VNC session, no separate mode.
 
-**Why capture happens in mitmproxy, not in Playwright.** An earlier version
-recorded captured requests via Playwright's `page.on("response")` — this
-turned out to silently miss requests that started before Playwright's CDP
-session finished attaching to the container's already-running Chrome (a
-documented Playwright/CDP timing race: Chrome doesn't retroactively replay
-network events to a client that attaches late), and it only ever saw traffic
-in the first place while Playwright happened to be attached, which isn't
-guaranteed during manual control. Chrome is now always launched with
-`--proxy-server` pointed at a local mitmproxy instance inside the container
-([vnc-browser/capture_addon.py](vnc-browser/capture_addon.py)), which sees
-every HTTP(S) request the browser sends regardless of Playwright/CDP attach
-state and regardless of manual vs. autonomous control — this is the actual
-source of truth for the captured-API list, polled by the backend
-([backend/app/crawl/capture_poller.py](backend/app/crawl/capture_poller.py))
-instead of Playwright events. Playwright is still used, but only for what
-it's actually needed for: driving navigation and the autonomous crawler.
 
 **Why Docker per session?** Each crawl session gets its own disposable
 container (Xvfb + Chromium + noVNC + a small nginx proxy). This keeps sessions
@@ -151,6 +117,7 @@ when a session stops (`--rm`).
 ./run.sh --frontend-port 3000           # run the frontend on a custom port
 ./run.sh --expose                       # bind the frontend to 0.0.0.0 (reachable from other machines)
 ./run.sh --expose --frontend-port 3000  # expose the frontend on a custom port
+./run.sh --prod --expose --frontend-port 8080  # production: one process, one port
 ```
 
 Ports and bind address can also be set via env vars (`BACKEND_PORT`,
@@ -161,16 +128,15 @@ What it does, in order:
 1. Checks Docker is actually running (not just installed) — fails fast with a
    clear message if not.
 2. Builds the `apidiscover-vnc-browser` image if it doesn't exist yet (skip
-   with no flag if it's already built; force a rebuild with `--rebuild` after
-   changing anything under `vnc-browser/`).
+   with no flag if it's already built; force a rebuild with `--rebuild`).
 3. Creates the backend virtualenv (`backend/.venv`) and installs
    `requirements.txt` if not already done.
 4. Runs `npm install` for the frontend if `node_modules` doesn't exist yet.
 5. Starts the backend (`uvicorn`, port 8000 by default) and frontend (`vite`,
    port 5173 by default) in the background, logging to
-   `.run-logs/backend.log` and `.run-logs/frontend.log`. The backend always
-   binds to `127.0.0.1` — it's never reachable from outside the machine, even
-   with `--expose`. The browser only ever talks to the frontend's own origin;
+   `.run-logs/backend.log` and `.run-logs/frontend.log`. In dev mode the backend
+   always binds to `127.0.0.1` — it's never reachable from outside the machine,
+   even with `--expose`. The browser only ever talks to the frontend's own origin;
    Vite proxies `/api` (see `frontend/vite.config.ts`) through to the backend
    over `localhost` on the server side, so a custom `--backend-port` works
    without exposing that port publicly. By default the frontend binds to
@@ -178,6 +144,12 @@ What it does, in order:
    your network (or the internet, if the port is open) can reach it.
 6. Prints the URLs and waits. **Ctrl+C** stops both processes and stops any
    crawl-session Docker containers left running (`apidiscover-crawl-*`).
+
+#### Production mode (`--prod`)
+
+Builds the frontend (`npm run build` into
+`frontend/dist`) and starts a single uvicorn process on the frontend port (no
+Vite, no `--reload`). That one process serves the built UI and `/api`, so only that one port needs to be open. Unknown paths fall back to `index.html` for client-side routing; `/api/*` paths never do.
 
 Requirements: Docker Desktop (or another Docker daemon), Python 3.10+,
 Node.js 18+.
@@ -203,7 +175,14 @@ npm run dev    # serves on http://localhost:5173
 ```
 OR
 ```bash
-npm run dev -- --host 0.0.0.0 
+npm run dev -- --host 0.0.0.0
+```
+
+**Production build, served by the backend (one port):**
+```bash
+cd frontend && npm run build                       # writes frontend/dist
+cd ../backend && source .venv/bin/activate
+uvicorn app.main:app --host 0.0.0.0 --port 8080    # UI and /api both on :8080
 ```
 
 **VNC browser image** (built once, reused by every crawl session — the
@@ -218,7 +197,7 @@ To manually sanity-check the image outside the app:
 ```bash
 docker run -d --rm --name manual-test \
   -e CDP_HOST_PORT=7000 \
-  -p 6080:6080 -p 7000:9223 \
+  -p 127.0.0.1:6080:6080 -p 127.0.0.1:7000:9223 \
   apidiscover-vnc-browser
 
 curl -s http://localhost:7000/json/version   # should return Chrome version JSON
@@ -236,76 +215,154 @@ uvicorn test_fixture.server:app --port 8100
 # then Launch browser against http://localhost:8100/index.html in the app
 ```
 
-## Features
+## Running locally and on a server
 
-### Domain Recon
+ApiDiscover runs in one of two modes, and each works on your laptop or on a
+server:
 
-Given a root domain, runs multiple discovery sources concurrently and merges
-the results into a deduplicated host list with basic liveness info (HTTP
-status, page title, `Server` header):
-
-| Source | Type | Notes |
+| | Dev (`./run.sh`) | Prod (`./run.sh --prod`) |
 |---|---|---|
-| Certificate transparency (crt.sh) | Passive | No API key, no traffic to the target |
-| DNS brute-force | Active | Wordlist-based, generates real DNS queries against the target |
-| Shodan | Third-party API | Requires API key |
-| Censys | Third-party API | Requires API key |
-| SecurityTrails | Third-party API | Requires API key |
-| VirusTotal | Third-party API | Requires API key |
-| Wallarm | Third-party API, **account-wide** | Requires token + client ID + `wsess` cookie; paginated |
+| Frontend | Vite dev server, hot reload | Built once with `npm run build`, served by the backend |
+| Backend | `uvicorn --reload`, port 8000, loopback only | `uvicorn`, no reload, on the frontend's port |
+| Ports open to the network | 1 (the frontend, with `--expose`) | 1 (the frontend port, with `--expose`) |
+| Use it for | Developing the app | Running it for real, including on a server |
 
-You can enter **multiple domains** at once (comma or newline separated) — each
-domain-scoped provider runs once per domain. Wallarm is different: its API has
-no domain filter and always returns the whole account's attack surface, so it
-runs exactly **once per recon run** regardless of how many domains you enter
-(or even zero domains, if you only want Wallarm's results). This is a general
-`account_wide` flag on the provider interface, not a Wallarm special-case in
-the orchestrator.
+Both modes use the same origin for the page and `/api`, so the app behaves the
+same way in each. Dev proxies `/api` through Vite. Prod serves `/api` and the
+UI from one process.
 
-Results **stream live** over a WebSocket (`/api/recon/stream`) as each host
-clears its liveness probe, instead of blocking until every provider and every
-probe finishes. If a provider fails outright (bad/expired credentials, a
-malformed request, etc.), that failure is surfaced as a distinct, visible
-error next to the results — e.g. `wallarm: Wallarm API error 403: User not
-authenticated` — instead of the run silently ending with nothing and no
-explanation.
+### Prerequisites
 
-Provider credentials are configured once in the **Settings** page and stored
-encrypted at rest (`backend/data/provider_config.enc`, key in
-`backend/data/secret.key` — both gitignored). The Settings page itself
-displays saved values in plaintext (no masking) so you can verify what was
-actually saved — encryption only protects the data at rest on disk, not what
-the API returns to the UI. Disabled or unconfigured providers are silently
-skipped, not treated as errors.
+| | Local (macOS/Linux/Windows with WSL) | Server (Linux) |
+|---|---|---|
+| Docker | Docker Desktop 4.x or newer, running | Docker Engine 20.10 or newer; the user must be in the `docker` group |
+| Python | 3.10+ | 3.10+ (`python3-venv` on Debian/Ubuntu) |
+| Node.js | 18+ | 18+ |
+| Browser | not needed (crawl browsers run in Docker) | not needed |
 
-Each discovered, reachable host has a **"Send to App Crawl"** button that
-pre-fills the App Crawl target — the two modes are meant to be used together.
-Once results start coming in, you can **Export CSV** to save the full host
-list (hostname, sources, status, title, server header, resolved IPs,
-reachability) — generated client-side from whatever's currently on screen, no
-extra backend round-trip.
+`run.sh` creates the backend virtualenv and installs Python and npm dependencies
+the first time it runs.
 
-**Adding a new recon provider:** the provider interface is intentionally
-pluggable —
+### Run it locally
 
-- `ApiListProvider` ([backend/app/recon/base.py](backend/app/recon/base.py))
-  for a simple single GET request with header/query auth (see
-  [third_party.py](backend/app/recon/third_party.py) for Shodan/Censys/etc.
-  as examples).
-- `PaginatedApiProvider` (same file) for POST + JSON body + cookie auth +
-  offset/limit pagination (see
-  [wallarm.py](backend/app/recon/wallarm.py)).
+```bash
+git clone <repo> ApiDiscover && cd ApiDiscover
 
-A new provider is a small subclass plus one line registering it in
-`default_providers()` in
-[orchestrator.py](backend/app/recon/orchestrator.py) — no changes to the
-orchestration logic itself.
+# Dev: hot reload, open http://localhost:5173
+./run.sh
+
+# Prod: built UI on one port, open http://localhost:8080
+./run.sh --prod --frontend-port 8080
+```
+
+Press **Ctrl+C** to stop. `run.sh` stops the servers and any leftover crawl
+containers.
+
+Logs are in `.run-logs/backend.log` and `.run-logs/frontend.log`. `frontend.log`
+is only written in dev mode.
+
+### Run it on a server
+
+The app has **no login**, and saved crawl sessions hold cookies and login
+state (see [Configuration](#configuration)). Treat the server like a
+private tool, and pick one of the options below. Don't open the port to the
+whole internet.
+
+**Option A: SSH tunnel (recommended).** Nothing is exposed. The server runs in
+prod on localhost, and you reach it through an SSH tunnel.
+
+```bash
+# On the server
+./run.sh --prod --frontend-port 8080           # listens on 127.0.0.1:8080 only
+
+# On your laptop
+ssh -N -L 8080:localhost:8080 user@your-server # leave this running
+# then open http://localhost:8080 on your laptop
+```
+
+**Option B: open the port to your IP only.** Run it on all interfaces and
+restrict access in the cloud firewall (AWS security group, GCP firewall rule,
+or `ufw`) to your own IP address.
+
+```bash
+./run.sh --prod --expose --frontend-port 8080  # listens on 0.0.0.0:8080
+# then open http://<server-ip>:8080
+```
+
+Allow inbound TCP on that port from your address only.
+
+**Option C: public HTTPS behind a reverse proxy.** Use this only if the app
+must be reachable from the internet. It needs a login layer, because the app
+has none. Run the app on loopback (`./run.sh --prod --frontend-port 8080`) and
+put nginx or Caddy in front with TLS and authentication. WebSockets need the
+upgrade headers:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+}
+```
+
+**Keeping it running after you disconnect.** `run.sh` runs in the foreground.
+Use `tmux` or `screen`:
+
+```bash
+tmux new -s apidiscover
+./run.sh --prod --expose --frontend-port 8080
+# detach with Ctrl+B then D; reattach later with: tmux attach -t apidiscover
+```
+
+### Checking that it works
+
+```bash
+curl -s http://localhost:8080/api/health       # {"status":"ok"}
+```
+
+Then open the UI and check that **Settings** loads (it shows the proxy CA
+certificate status).
+Start an App Crawl and confirm the browser viewer connects. You should see
+`Connected` in the viewer.
+
+From another machine, `curl` to the server's address should work only on the
+port you opened and only from the address you allowed.
+
+### Updating
+
+```bash
+git pull
+./run.sh --prod --expose --frontend-port 8080   # rebuilds the frontend every time
+```
+
+- `run.sh` only installs Python dependencies when `fastapi` is missing. After
+  changing `backend/requirements.txt`, run
+  `backend/.venv/bin/pip install -r backend/requirements.txt` yourself.
+- After changing anything under `vnc-browser/`, rebuild the browser image with
+  `./run.sh --rebuild`.
+
+### Settings that matter in each mode
+
+| What | Dev | Prod |
+|---|---|---|
+| Frontend port | `--frontend-port` (default 5173) | `--frontend-port` (default 5173) |
+| Backend port | `--backend-port` (default 8000), loopback only | not used; the backend shares the frontend port |
+| Reachable from other machines | with `--expose` | with `--expose` |
+| Hot reload | yes | no; rebuild or restart to see changes |
+
+Env vars work too: `FRONTEND_PORT`, `BACKEND_PORT`, and `HOST=0.0.0.0`
+(same as `--expose`).
+
+## Features
 
 ### App Crawl
 
 1. Enter a target URL, click **Launch browser** — a real Chromium instance
    starts in a fresh Docker container, streamed into the page via an embedded
-   noVNC viewer.
+   noVNC viewer. Tick **Save this session for later** first if you want to
+   come back to it after stopping.
 2. Interact with it directly (it's a real VNC session — mouse, keyboard,
    clipboard) to log in or get past anything automation-hostile.
 3. Click **Start autonomous crawl** — control switches to a deterministic
@@ -343,18 +400,20 @@ orchestration logic itself.
 7. **Stop crawl** (separate, explicit action) tears down the browser
    container.
 
-Exclusions are **session-scoped** — they reset on the next crawl, they don't
-persist across runs.
+Exclusions are **session-scoped** by default: a normal session starts fresh
+every time.
+
+**Saved sessions.** A session started with **Save this session for later**
+keeps its browser profile (cookies, login state), its captured requests, and
+its exclusions on disk. It then appears under **Saved sessions**. **Resume**
+relaunches the browser with that profile and history restored, and **Delete**
+removes it. A session that is currently running can't be resumed or deleted;
+stop it first.
 
 There's no LLM in the loop anywhere in the crawler — "stuck" always means
 "pause and ask a human," which is simpler, free, and more predictable than a
 model guessing at a next action.
 
-Switching to **Settings** and back does not reset an in-progress recon run or
-crawl session — the Home and Settings views are both kept mounted at all
-times (just hidden/shown with CSS) specifically so their live WebSocket
-connections, capture counts, and the embedded browser viewer survive
-navigating away and back.
 
 **Routing through an intercepting proxy (e.g. Burp Suite).** Before clicking
 Launch browser, optionally check "Route this session's browser traffic
@@ -395,6 +454,12 @@ IDs collapse into one documented endpoint instead of hundreds.
 This part had several non-obvious failure modes worth documenting for future
 maintenance:
 
+- **noVNC is reached through the backend, not directly.** Each session's
+  container publishes its noVNC, CDP, and capture ports on `127.0.0.1` only.
+  The viewer iframe loads `/api/crawl/{id}/vnc/vnc.html` from the same origin,
+  and the backend relays both the HTML/assets and the WebSocket to the
+  container ([backend/app/crawl/vnc_proxy.py](backend/app/crawl/vnc_proxy.py)).
+  That's why a single exposed port is enough.
 - **Chrome's CDP HTTP server only trusts loopback-looking `Host` headers.**
   A request arriving through Docker's published port carries
   `Host: localhost:<port>`, which Chrome resets as a DNS-rebinding
@@ -434,81 +499,94 @@ maintenance:
 
 ```
 ApiDiscover/
-├── run.sh                    one-command dev runner
+├── run.sh                    one-command dev/prod runner
 ├── backend/
 │   ├── app/
-│   │   ├── main.py           FastAPI app entrypoint
-│   │   ├── api/               routes_recon.py, routes_crawl.py
-│   │   ├── recon/              provider interfaces + implementations
-│   │   ├── crawl/               session.py, container.py, walker.py,
-│   │   │                        capture_poller.py (polls mitmproxy's
-│   │   │                        capture API instead of Playwright events)
-│   │   ├── export/              normalize.py, openapi.py, postman.py
-│   │   └── core/                 models.py, config.py
+│   │   ├── main.py            FastAPI app entrypoint (CORS, routers, static UI)
+│   │   ├── frontend_static.py serves frontend/dist in --prod (SPA fallback)
+│   │   ├── api/               routes_crawl.py, routes_settings.py
+│   │   ├── crawl/             session.py, container.py, walker.py,
+│   │   │                      capture_poller.py (polls mitmproxy's capture API),
+│   │   │                      vnc_proxy.py (relays noVNC HTTP + WebSocket),
+│   │   │                      js_scan.py (JS endpoint discovery)
+│   │   ├── export/            normalize.py, openapi.py, postman.py
+│   │   └── core/              models.py, config.py,
+│   │                          sessions_store.py (saved crawl sessions)
+│   ├── tests/                 pytest suite (see Tests)
 │   ├── test_fixture/          tiny local app for testing the crawler
 │   ├── smoke_test.py          standalone crawl-pipeline smoke test
-│   └── requirements.txt
+│   ├── pytest.ini
+│   ├── requirements.txt
+│   └── requirements-dev.txt
 ├── frontend/
-│   └── src/
-│       ├── App.tsx            top-level nav (Home / Settings)
-│       ├── components/         ReconPanel, AppCrawlPanel, BrowserViewer,
-│       │                       CapturedEndpointsPanel, SettingsPanel
-│       └── lib/api.ts          typed fetch/WebSocket client
+│   ├── src/
+│   │   ├── App.tsx            top-level nav (Home / Settings)
+│   │   ├── components/        AppCrawlPanel, BrowserViewer,
+│   │   │                      CapturedEndpointsPanel, SettingsPanel
+│   │   └── lib/
+│   │       ├── api.ts         typed fetch/WebSocket client
+│   │       └── api.test.ts    vitest tests for api.ts
+│   └── vitest.config.ts
 └── vnc-browser/               Docker image: Xvfb + Chromium + mitmproxy + noVNC + nginx
     ├── Dockerfile
-    ├── supervisord.conf        process manager for everything in the container
-    ├── start-browser.sh        waits for Xvfb + mitmproxy, launches Chromium
-    ├── start-mitm.sh           starts mitmproxy, the actual API-capture point
-    ├── capture_addon.py        mitmproxy addon: logs every request/response,
-    │                           serves them over a small HTTP API
-    ├── start-nginx.sh          renders cdp-proxy.conf from template, starts nginx
+    ├── supervisord.conf       process manager for everything in the container
+    ├── start-browser.sh       waits for Xvfb + mitmproxy, launches Chromium
+    ├── start-mitm.sh          starts mitmproxy, the actual API-capture point
+    ├── capture_addon.py       mitmproxy addon: logs every request/response,
+    │                          serves them over a small HTTP API
+    ├── start-nginx.sh         renders cdp-proxy.conf from template, starts nginx
     ├── cdp-proxy.conf.template
-    ├── fluxbox-apps            borderless/maximized window rule
-    └── fluxbox-init            disables the taskbar
+    ├── fluxbox-apps           borderless/maximized window rule
+    └── fluxbox-init           disables the taskbar
 ```
 
 ## Backend API reference
 
-All endpoints are under `http://localhost:8000`.
+Everything lives under `/api`. The browser reaches it through the frontend's
+origin. In dev mode the backend listens on `http://localhost:8000` on the
+server; in `--prod` it's the same port as the UI. Interactive docs (Swagger UI)
+are at `/docs` on the backend's port.
 
-**Recon** (`/api/recon`)
+**General**
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/providers` | List configured providers, including real decrypted credential values (see [Configuration](#configuration)) |
-| PUT | `/providers` | Create/update a provider's config (api_key, cookies, extra) |
-| WS | `/stream` | Send `{"domains": ["a.com", ...]}` (domains may be empty); streams back `{"type": "host", "data": ...}`, `{"type": "provider_error", "provider": ..., "message": ...}`, and a final `{"type": "done"}` |
+| GET | `/api/health` | Liveness check |
+
+**Settings** (`/api/settings`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/proxy-ca-cert` | Whether an intercepting-proxy CA certificate is configured |
+| PUT | `/proxy-ca-cert` | Upload a PEM CA certificate (multipart `file`); must start with `-----BEGIN CERTIFICATE-----` |
+| DELETE | `/proxy-ca-cert` | Remove the configured CA certificate |
 
 **Crawl** (`/api/crawl`)
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/start` | Launch a new crawl session (starts the VNC container), returns `session_id` + `novnc_url` |
-| GET | `/{session_id}/endpoints` | Current normalized, exclusion-filtered endpoint list — safe to poll anytime |
-| POST | `/{session_id}/exclude-host` | Exclude an entire host going forward |
-| POST | `/{session_id}/exclude-endpoint` | Exclude one (method, host, path_template) |
-| POST | `/{session_id}/scan-js` | Actively fetch + scan JS for API paths, then live-verify candidates through the session's browser |
-| GET | `/{session_id}/export?group_by_host=` | Returns `{openapi, postman, endpoint_count}` |
-| POST | `/{session_id}/stop` | Stops the crawl and tears down its container |
-| WS | `/{session_id}/stream` | Live `capture`/`status`/`js_scan_done`/`js_scan_error` events out; `start_autonomous` / `resume_autonomous` / `stop_autonomous` control messages in |
-
-Interactive docs (Swagger UI) are always available at
-`http://localhost:8000/docs` while the backend is running.
+| GET | `/static-extension-groups` | Preset extension groups for the "exclude static files" toggle |
+| POST | `/proxy/check` | Check that a `host:port` proxy is reachable from inside a container |
+| POST | `/start` | Launch a crawl session (body: `start_url`, optional `proxy_server`, `save_session`). Returns `session_id` and `novnc_url`, a same-origin path |
+| GET | `/sessions` | List saved sessions, with `active` and `endpoint_count` |
+| POST | `/sessions/{id}/resume` | Relaunch a saved session with its profile and history restored (optional body: `proxy_server`) |
+| DELETE | `/sessions/{id}` | Delete a saved session (refused while it's active) |
+| GET | `/{id}/endpoints` | Current normalized, exclusion-filtered endpoint list — safe to poll anytime |
+| GET | `/{id}/exclusions` | Current host, endpoint, extension, and method exclusions |
+| POST | `/{id}/exclude-host`, `/{id}/include-host` | Exclude or re-include an entire host |
+| POST | `/{id}/exclude-endpoint`, `/{id}/include-endpoint` | Exclude or re-include one (method, host, path_template) |
+| POST | `/{id}/exclude-extension`, `/{id}/include-extension` | Exclude or re-include a file extension |
+| POST | `/{id}/exclude-method`, `/{id}/include-method` | Exclude or re-include an HTTP method |
+| POST | `/{id}/scan-js` | Actively fetch + scan JS for API paths, then live-verify candidates through the session's browser |
+| POST | `/{id}/upload` | Upload a file into the session browser's Uploads folder (multipart `file`) |
+| GET | `/{id}/export?group_by_host=` | Returns `{openapi, postman, endpoint_count}` |
+| POST | `/{id}/stop` | Stops the crawl and tears down its container |
+| GET, HEAD | `/{id}/vnc/{path}` | noVNC's HTML and assets, relayed from the session's container (not in OpenAPI) |
+| WS | `/{id}/vnc/{path}` | noVNC's RFB stream, relayed from the session's container |
+| WS | `/{id}/stream` | Live `capture`/`status`/`js_scan_done`/`js_scan_error` events out; `start_autonomous` / `resume_autonomous` / `stop_autonomous` control messages in |
 
 ## Configuration
 
-- **Recon provider credentials** — set via the Settings page in the app, not
-  environment variables. Stored encrypted at `backend/data/provider_config.enc`
-  (Fernet key in `backend/data/secret.key`). Both are gitignored; deleting
-  them resets all provider config. The Settings page and `GET /providers` show
-  these values in plaintext by design — this is a trusted, single-user local
-  tool, and encryption is meant to protect the file at rest on disk, not to
-  hide values from the person who saved them.
-- **Wallarm's `api_host` field** accepts a bare host
-  (`us1.api.wallarm.com`), a full base URL, or a value that already includes
-  the `/v1/attack_surface/subdomains` path — `WallarmProvider.build_url`
-  normalizes whichever form you paste in, so it never ends up
-  double-appending the path.
 - **Intercepting-proxy CA certificate** — uploaded via the Settings page,
   stored as a plain PEM file at `backend/data/proxy_ca.pem` (gitignored; not
   encrypted, since a CA certificate is a public document with no private key
@@ -519,10 +597,18 @@ Interactive docs (Swagger UI) are always available at
   sees this cert; it only ever trusts mitmproxy's own CA
   (`~/.mitmproxy/mitmproxy-ca-cert.pem`, generated fresh per container),
   since mitmproxy is the only thing Chrome talks to directly now.
+- **Saved App Crawl sessions** — stored under `backend/data/sessions/<id>/`
+  (`session.json`, `captured.jsonl`, and the Chrome `profile/`). They aren't
+  encrypted. The profile holds cookies and login state, so treat that
+  directory as sensitive. Deleting a saved session removes its directory.
 - **Ports** — backend defaults to `8000`, frontend to `5173`; both are
   configurable via `run.sh --backend-port` / `--frontend-port` (see
-  [One command: run.sh](#one-command-runsh)). noVNC, CDP, and the capture API
-  port per session are chosen dynamically by the OS and are not fixed.
+  [One command: run.sh](#one-command-runsh)). Each crawl session's noVNC, CDP,
+  and capture ports are chosen by the OS and published on `127.0.0.1` only.
+  The viewer reaches noVNC through the backend at
+  `/api/crawl/{session_id}/vnc/...` ([backend/app/crawl/vnc_proxy.py](backend/app/crawl/vnc_proxy.py)),
+  which relays both its HTML/assets and its WebSocket, so noVNC is never
+  exposed directly.
 - **Frontend → backend requests** — [frontend/src/lib/api.ts](frontend/src/lib/api.ts)
   fetches everything from the page's own origin (`/api/...`, no host or port
   of its own). [frontend/vite.config.ts](frontend/vite.config.ts) proxies
@@ -535,6 +621,35 @@ Interactive docs (Swagger UI) are always available at
   also means the browser works unmodified whether you load the page via
   `localhost`, `127.0.0.1`, or a LAN/public IP — it never needs to know the
   backend's real address.
+
+## Tests
+
+Backend (pytest, from `backend/`):
+
+```bash
+backend/.venv/bin/pip install -r backend/requirements-dev.txt
+cd backend && .venv/bin/python -m pytest
+```
+
+Covers: the noVNC HTTP and WebSocket relay (against a fake noVNC server), the
+loopback-only container port bindings, the App Crawl routes (start, saved
+sessions, resume, delete), saved-session storage and exclusion persistence,
+Settings (proxy CA certificate upload and removal), the export
+pipeline (normalize, OpenAPI, Postman), JS-scan helpers, the static frontend
+serving and its path-traversal guard, and CORS.
+
+Frontend (vitest, from `frontend/`):
+
+```bash
+cd frontend && npm test
+```
+
+Covers the WebSocket and fetch helpers in `src/lib/api.ts`.
+
+Not covered by automated tests: the React components, the Playwright DOM
+walker, `run.sh` itself, and anything that needs a live Docker container. Those
+were checked by hand (the noVNC viewer was loaded in headless Chromium through
+the proxy and connected).
 
 ## Troubleshooting
 
@@ -550,6 +665,21 @@ if you still see timeouts, check `curl -v http://ports.ubuntu.com` vs
 **`ECONNREFUSED` connecting to CDP, or the browser never appears** — almost
 always means the vnc-browser image is stale relative to the backend/session
 code. Rebuild with `./run.sh --rebuild`.
+
+**Settings or App Crawl shows "Failed to fetch"** — the page can't
+reach the backend through its own origin. Check that the server is running
+(`.run-logs/backend.log`) and that you opened the frontend port `run.sh`
+printed. The backend is deliberately not exposed on its own port, so
+opening `:8000` from another machine won't work. For a remote server, run
+`./run.sh --prod --expose --frontend-port <port>` and open that one port.
+
+**The App Crawl viewer is blank or won't connect** — check that the session's
+container is running (`docker ps --filter name=apidiscover-crawl-`) and that
+the backend log has no errors. The viewer loads through the backend, so the
+backend has to be up.
+
+**Resume or delete of a saved session is refused (409)** — the session is
+still running. Stop it first.
 
 **Clicks/keyboard don't reach the remote browser** — the noVNC iframe should
 accept input directly; if it doesn't seem to, click once inside the iframe

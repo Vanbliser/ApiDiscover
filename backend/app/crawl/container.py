@@ -50,7 +50,7 @@ async def check_proxy_reachable(proxy_host: str, proxy_port: int, timeout: float
     starts (see VncBrowserContainer.proxy_server).
     """
     proc = await asyncio.create_subprocess_exec(
-        "docker", "run", "--rm", VNC_BROWSER_IMAGE,
+        "docker", "run", "--rm", "--add-host", "host.docker.internal:host-gateway", VNC_BROWSER_IMAGE,
         "bash", "-c",
         f'timeout {timeout} bash -c "exec 3<>/dev/tcp/{proxy_host}/{proxy_port}" 2>&1',
         stdout=asyncio.subprocess.PIPE,
@@ -126,20 +126,27 @@ class VncBrowserContainer:
                 args = [
                     "docker", "run", "-d", "--rm",
                     "--name", self.container_name,
+                    # Gives every platform the same name for the host: Docker
+                    # Desktop on macOS and the bridge gateway on Linux (Docker
+                    # Engine 20.10+). Proxy addresses use host.docker.internal.
+                    "--add-host", "host.docker.internal:host-gateway",
                     "-e", f"CDP_HOST_PORT={cdp_port}",
                     # Always set, even empty — supervisord's %(ENV_PROXY_SERVER)s
                     # expansion in supervisord.conf hard-fails at container
                     # startup if the var isn't present in the environment at
                     # all, so this can't be added only when a proxy is chosen.
                     "-e", f"PROXY_SERVER={self.proxy_server or ''}",
-                    "-p", f"{novnc_port}:6080",
-                    "-p", f"{cdp_port}:9223",
+                    # Every session port is bound to loopback only. The browser
+                    # reaches noVNC through the backend's /vnc proxy route
+                    # (see vnc_proxy.py), so nothing here should be public.
+                    "-p", f"127.0.0.1:{novnc_port}:6080",
+                    "-p", f"127.0.0.1:{cdp_port}:9223",
                     # mitmproxy's capture API (see capture_addon.py) — the
                     # backend polls this instead of Playwright's
                     # page.on("response"), which silently missed requests
                     # that started before Playwright's CDP session finished
                     # attaching to this already-running Chrome instance.
-                    "-p", f"{capture_port}:9225",
+                    "-p", f"127.0.0.1:{capture_port}:9225",
                 ]
                 if self.uploads_dir is not None:
                     # Host-side directory the backend writes uploaded files
@@ -198,11 +205,6 @@ class VncBrowserContainer:
     def cdp_endpoint(self) -> str:
         assert self.cdp_port is not None
         return f"http://localhost:{self.cdp_port}"
-
-    @property
-    def novnc_url(self) -> str:
-        assert self.novnc_port is not None
-        return f"http://localhost:{self.novnc_port}/vnc.html?autoconnect=true&resize=scale"
 
     @property
     def capture_api_endpoint(self) -> str:

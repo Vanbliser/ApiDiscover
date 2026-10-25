@@ -3,50 +3,8 @@
 // never exposed directly, even when the frontend is reachable externally.
 const API_BASE = "";
 
-export interface LiveHost {
-  hostname: string;
-  sources: string[];
-  status_code: number | null;
-  title: string | null;
-  server_header: string | null;
-  resolved_ips: string[];
-  reachable: boolean;
-}
-
-export interface ProviderConfig {
-  name: string;
-  enabled: boolean;
-  api_key: string | null;
-  cookies: Record<string, string>;
-  extra: Record<string, string>;
-}
-
 function wsBase(): string {
   return `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`;
-}
-
-export function reconStreamUrl(): string {
-  return `${wsBase()}/api/recon/stream`;
-}
-
-export async function listProviders(): Promise<ProviderConfig[]> {
-  const res = await fetch(`${API_BASE}/api/recon/providers`);
-  if (!res.ok) throw new Error(`failed to load provider settings: ${res.status}`);
-  return res.json();
-}
-
-export async function upsertProvider(
-  name: string,
-  enabled: boolean,
-  apiKey: string = "",
-  cookies: Record<string, string> = {},
-  extra: Record<string, string> = {}
-): Promise<void> {
-  await fetch(`${API_BASE}/api/recon/providers`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, enabled, api_key: apiKey, cookies, extra }),
-  });
 }
 
 export async function startCrawl(
@@ -126,7 +84,7 @@ export async function getEndpoints(sessionId: string): Promise<DiscoveredEndpoin
 }
 
 export async function getProxyCaCertStatus(): Promise<{ configured: boolean }> {
-  const res = await fetch(`${API_BASE}/api/recon/proxy-ca-cert`);
+  const res = await fetch(`${API_BASE}/api/settings/proxy-ca-cert`);
   if (!res.ok) throw new Error(`failed to load proxy CA cert status: ${res.status}`);
   return res.json();
 }
@@ -134,7 +92,7 @@ export async function getProxyCaCertStatus(): Promise<{ configured: boolean }> {
 export async function uploadProxyCaCert(file: File): Promise<void> {
   const formData = new FormData();
   formData.append("file", file);
-  const res = await fetch(`${API_BASE}/api/recon/proxy-ca-cert`, { method: "PUT", body: formData });
+  const res = await fetch(`${API_BASE}/api/settings/proxy-ca-cert`, { method: "PUT", body: formData });
   if (!res.ok) {
     const detail = await res.json().catch(() => null);
     throw new Error(detail?.detail ?? `upload failed: ${res.status}`);
@@ -142,7 +100,7 @@ export async function uploadProxyCaCert(file: File): Promise<void> {
 }
 
 export async function deleteProxyCaCert(): Promise<void> {
-  await fetch(`${API_BASE}/api/recon/proxy-ca-cert`, { method: "DELETE" });
+  await fetch(`${API_BASE}/api/settings/proxy-ca-cert`, { method: "DELETE" });
 }
 
 export async function checkProxyReachable(
@@ -297,21 +255,3 @@ export function downloadJson(data: object, filename: string): void {
   URL.revokeObjectURL(url);
 }
 
-function csvEscape(value: string): string {
-  if (/[",\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
-}
-
-export function downloadCsv(rows: (string | number | null)[][], filename: string): void {
-  const csv = rows
-    .map((row) => row.map((cell) => csvEscape(cell === null ? "" : String(cell))).join(","))
-    .join("\r\n");
-  // Leading BOM so Excel opens the file as UTF-8 instead of guessing wrong.
-  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}

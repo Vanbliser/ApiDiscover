@@ -15,12 +15,12 @@ from app.core.models import CapturedRequest, CrawlerStatus
 from app.crawl.capture_poller import CapturePoller
 from app.crawl.container import VncBrowserContainer
 from app.crawl.js_scan import JsEndpointScanner
+from app.crawl.vnc_proxy import novnc_page_url
 from app.export.normalize import templatize_path
 
 # Per-session scratch space for files uploaded from the browser client and
 # bind-mounted into the session's container (see VncBrowserContainer). Lives
-# under backend/data alongside the other gitignored local state
-# (provider_config.enc, secret.key).
+# under backend/data alongside the other gitignored local state.
 UPLOADS_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "uploads"
 
 # Preset extension groups for the "exclude static files" quick-toggle — each
@@ -114,7 +114,9 @@ class CrawlSession:
 
     @property
     def novnc_url(self) -> str:
-        return self.container.novnc_url
+        # Same-origin path served through the backend's /vnc proxy route, so it
+        # works wherever the app is reachable from — not just on this machine.
+        return novnc_page_url(self.session_id)
 
     @property
     def has_proxy_ca_cert(self) -> bool:

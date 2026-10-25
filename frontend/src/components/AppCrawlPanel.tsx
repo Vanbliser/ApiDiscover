@@ -12,12 +12,8 @@ import type { SavedSession } from "../lib/api";
 import { BrowserViewer } from "./BrowserViewer";
 import { CapturedEndpointsPanel } from "./CapturedEndpointsPanel";
 
-interface Props {
-  initialUrl?: string;
-}
-
-export function AppCrawlPanel({ initialUrl }: Props) {
-  const [url, setUrl] = useState(initialUrl ?? "");
+export function AppCrawlPanel() {
+  const [url, setUrl] = useState("");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [novncUrl, setNovncUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);

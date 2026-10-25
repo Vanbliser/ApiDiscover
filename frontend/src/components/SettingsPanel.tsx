@@ -1,187 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  deleteProxyCaCert,
-  getProxyCaCertStatus,
-  listProviders,
-  upsertProvider,
-  uploadProxyCaCert,
-  type ProviderConfig,
-} from "../lib/api";
-
-interface ExtraField {
-  key: string;
-  label: string;
-  isCookie?: boolean;
-}
-
-interface ProviderDef {
-  name: string;
-  label: string;
-  hasApiKey: boolean;
-  apiKeyLabel?: string;
-  extraFields?: ExtraField[];
-}
-
-const PROVIDERS: ProviderDef[] = [
-  { name: "crt_sh", label: "crt.sh (passive, no key)", hasApiKey: false },
-  { name: "dns_bruteforce", label: "DNS brute-force (active, no key)", hasApiKey: false },
-  { name: "shodan", label: "Shodan", hasApiKey: true },
-  { name: "censys", label: "Censys", hasApiKey: true },
-  { name: "securitytrails", label: "SecurityTrails", hasApiKey: true },
-  { name: "virustotal", label: "VirusTotal", hasApiKey: true },
-  {
-    name: "wallarm",
-    label: "Wallarm",
-    hasApiKey: true,
-    apiKeyLabel: "Token",
-    extraFields: [
-      { key: "client_id", label: "Client ID" },
-      { key: "api_host", label: "API host (default us1.api.wallarm.com)" },
-      { key: "wsess", label: "wsess cookie", isCookie: true },
-    ],
-  },
-];
-
-interface FormState {
-  enabled: boolean;
-  apiKey: string;
-  extra: Record<string, string>;
-  cookies: Record<string, string>;
-}
-
-function emptyForm(provider: ProviderDef): FormState {
-  return {
-    enabled: !provider.hasApiKey,
-    apiKey: "",
-    extra: {},
-    cookies: {},
-  };
-}
-
-function formFromConfig(config: ProviderConfig): FormState {
-  return {
-    enabled: config.enabled,
-    apiKey: config.api_key ?? "",
-    extra: { ...config.extra },
-    cookies: { ...config.cookies },
-  };
-}
+import { deleteProxyCaCert, getProxyCaCertStatus, uploadProxyCaCert } from "../lib/api";
 
 export function SettingsPanel() {
-  const [forms, setForms] = useState<Record<string, FormState>>({});
-  const [savedFlash, setSavedFlash] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  async function loadConfig() {
-    setLoadError(null);
-    try {
-      const configs = await listProviders();
-      const byName: Record<string, ProviderConfig> = {};
-      for (const c of configs) byName[c.name] = c;
-
-      setForms(
-        Object.fromEntries(
-          PROVIDERS.map((p) => [p.name, byName[p.name] ? formFromConfig(byName[p.name]) : emptyForm(p)])
-        )
-      );
-      setLoaded(true);
-    } catch (e) {
-      setLoadError(e instanceof Error ? e.message : String(e));
-    }
-  }
-
-  useEffect(() => {
-    loadConfig();
-  }, []);
-
-  function updateForm(name: string, patch: Partial<FormState>) {
-    setForms((s) => ({ ...s, [name]: { ...s[name], ...patch } }));
-  }
-
-  function updateExtraField(name: string, key: string, value: string) {
-    setForms((s) => ({ ...s, [name]: { ...s[name], extra: { ...s[name].extra, [key]: value } } }));
-  }
-
-  function updateCookieField(name: string, key: string, value: string) {
-    setForms((s) => ({ ...s, [name]: { ...s[name], cookies: { ...s[name].cookies, [key]: value } } }));
-  }
-
-  async function handleSave(provider: ProviderDef) {
-    const form = forms[provider.name];
-    await upsertProvider(provider.name, form.enabled, form.apiKey, form.cookies, form.extra);
-    setSavedFlash(provider.name);
-    setTimeout(() => setSavedFlash(null), 1500);
-  }
-
-  if (!loaded) {
-    return (
-      <div className="panel">
-        <h2>Recon Provider Settings</h2>
-        {loadError ? (
-          <>
-            <p className="error">Failed to load settings: {loadError}</p>
-            <button onClick={loadConfig}>Retry</button>
-          </>
-        ) : (
-          <p className="hint">Loading saved settings...</p>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <div className="panel">
-      <h2>Recon Provider Settings</h2>
-      <p className="hint">
-        Values are encrypted at rest but shown here in plain text for convenience, since this runs
-        locally. Settings persist across navigation and are applied the next time you run recon.
-      </p>
-
-      <div className="provider-grid">
-        {PROVIDERS.map((p) => {
-          const form = forms[p.name];
-          if (!form) return null;
-          return (
-            <div className="provider-grid-row" key={p.name}>
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={(e) => updateForm(p.name, { enabled: e.target.checked })}
-              />
-              <span className="provider-name">{p.label}</span>
-              <div className="provider-fields">
-                {p.hasApiKey && (
-                  <input
-                    type="text"
-                    placeholder={p.apiKeyLabel ?? "API key"}
-                    value={form.apiKey}
-                    onChange={(e) => updateForm(p.name, { apiKey: e.target.value })}
-                  />
-                )}
-                {p.extraFields?.map((field) => (
-                  <input
-                    key={field.key}
-                    type="text"
-                    placeholder={field.label}
-                    value={(field.isCookie ? form.cookies[field.key] : form.extra[field.key]) ?? ""}
-                    onChange={(e) =>
-                      field.isCookie
-                        ? updateCookieField(p.name, field.key, e.target.value)
-                        : updateExtraField(p.name, field.key, e.target.value)
-                    }
-                  />
-                ))}
-              </div>
-              <button onClick={() => handleSave(p)}>{savedFlash === p.name ? "Saved" : "Save"}</button>
-            </div>
-          );
-        })}
-      </div>
-
-      <ProxyCaCertSettings />
-    </div>
-  );
+  return <ProxyCaCertSettings />;
 }
 
 function ProxyCaCertSettings() {
@@ -234,7 +55,7 @@ function ProxyCaCertSettings() {
   }
 
   return (
-    <div className="panel" style={{ marginTop: 24 }}>
+    <div className="panel">
       <h2>Intercepting Proxy (Burp Suite) CA Certificate</h2>
       <p className="hint">
         Lets the remote browser trust an intercepting proxy's TLS certificate (e.g. Burp Suite's),
@@ -300,23 +121,21 @@ function ProxySetupGuide() {
       </p>
       <p>
         <strong>2. Backend runs remotely, Burp stays on your laptop</strong>: your laptop usually
-        has no stable, directly-reachable address (NAT/CGNAT, changing IP). Don't try to use your
-        laptop's public IP directly — instead create a tunnel <em>from</em> your laptop{" "}
-        <em>to</em> the remote backend server, and point the session at the tunnel's address on
-        that server:
+        has no address the server can reach, so the connection has to start from your laptop.
+        Enter <code>host.docker.internal:8080</code> as the proxy address, and open a tunnel from
+        your laptop that makes Burp reachable on the server's Docker bridge:
       </p>
       <ul>
         <li>
-          Already using Tailscale/WireGuard or another mesh VPN? Just use your laptop's VPN IP —
-          simplest option if available.
+          Already using Tailscale/WireGuard or another mesh VPN? Point Burp at your laptop's VPN
+          address instead, if the server can reach it. That's the simplest option.
         </li>
         <li>
-          Otherwise, an SSH reverse tunnel works without extra software:{" "}
-          <code>ssh -R 127.0.0.1:8080:localhost:8080 user@remote-backend-host</code> (run from your
-          laptop, while Burp listens on port 8080 there) — then use <code>localhost:8080</code> as
-          the proxy address <em>from the remote server's point of view</em>. Keep the{" "}
-          <code>127.0.0.1:</code> prefix exactly as shown if this backend is internet-facing —
-          dropping it can expose Burp to anyone who finds the remote server's IP.{" "}
+          Otherwise, run this on your laptop, with Burp listening on <code>127.0.0.1:8080</code>:{" "}
+          <code>ssh -N -R 172.17.0.1:8080:localhost:8080 user@remote-backend-host</code>. Here{" "}
+          <code>172.17.0.1</code> is the server's Docker bridge address (check it with{" "}
+          <code>ip -4 addr show docker0</code>). This needs{" "}
+          <code>GatewayPorts clientspecified</code> in the server's sshd config.{" "}
           <SshTunnelDetails />
         </li>
       </ul>
@@ -364,58 +183,35 @@ function SshTunnelDetails() {
       {open && (
         <div style={{ marginTop: 8, paddingLeft: 12, borderLeft: "2px solid currentColor", opacity: 0.9 }}>
           <p>
-            <strong>The setup:</strong> your laptop runs Burp, listening on{" "}
-            <code>127.0.0.1:8080</code> (only accepts connections from itself). The remote server
-            runs this app's backend and needs to send crawl traffic to Burp. The remote server
-            can't connect to your laptop directly — laptops usually sit behind NAT/CGNAT with no
-            stable address reachable from outside. So the direction is flipped: your laptop
-            initiates a connection <em>to</em> the remote server, and that connection becomes a
-            tunnel the remote server can use to reach back to Burp.
+            <strong>The setup:</strong> Burp runs on your laptop, listening on{" "}
+            <code>127.0.0.1:8080</code>, so it accepts connections only from the laptop itself. The
+            session containers run on the server and need to reach Burp. The server can't connect
+            to your laptop directly, because laptops sit behind NAT with no stable address. So the
+            tunnel is opened from the laptop <em>to</em> the server.
           </p>
           <p>
-            <strong>What the command does:</strong> running{" "}
-            <code>ssh -R 127.0.0.1:8080:localhost:8080 user@remote-backend-host</code> from your
-            laptop opens a normal SSH session, and the <code>-R</code> flag tells the remote
-            server "open port 8080 on yourself, and forward any connection that arrives there back
-            through this SSH connection to <code>localhost:8080</code> on my end" (where Burp is
-            listening). Now something is listening on port 8080 on the remote server, and anything
-            that connects to it ends up talking to Burp on your laptop. That's why the app's proxy
-            address field gets set to <code>localhost:8080</code> — from the remote server's own
-            point of view, that's where "Burp" now appears to live, since that's the tunnel
-            entrance.
+            <strong>What the command does:</strong> <code>-R 172.17.0.1:8080:localhost:8080</code>{" "}
+            tells the server to listen on <code>172.17.0.1:8080</code> and forward anything that
+            arrives there back through the SSH connection to Burp on your laptop.
           </p>
           <p>
-            <strong>What the <code>127.0.0.1:</code> prefix changes:</strong> the full syntax of{" "}
-            <code>-R</code> is <code>-R [bind_address:]port:host:port</code>. The leading{" "}
-            <code>127.0.0.1:</code> is the bind address <em>on the remote server</em> — it controls
-            who on the remote server's network can connect to the tunnel entrance.
+            <strong>Why the Docker bridge address:</strong> containers reach the host through the
+            bridge, not through the server's loopback. <code>host.docker.internal</code> resolves to
+            that bridge address on Linux, so a listener on <code>127.0.0.1</code> on the server
+            would be invisible to the containers.
           </p>
-          <ul>
-            <li>
-              <strong>With it</strong> (as shown above): the tunnel entrance only accepts
-              connections from the remote server itself — only processes running on that same
-              server (like this app's backend) can use it to reach Burp. Nobody outside that
-              server can touch port 8080 on it at all.
-            </li>
-            <li>
-              <strong>Without it</strong> (just <code>-R 8080:localhost:8080</code>): SSH's
-              default server-side setting (<code>GatewayPorts</code>) can bind that tunnel
-              entrance to all interfaces on the remote server, including its public one. If that
-              default is in play, anyone on the internet who knows the remote server's IP could
-              connect to <code>&lt;remote-server-ip&gt;:8080</code> directly and land inside your
-              tunnel, reaching Burp on your laptop — completely bypassing this app and any of its
-              own access controls.
-            </li>
-          </ul>
           <p>
-            <strong>Why it matters more for an internet-facing deployment:</strong> when the
-            backend was only reachable over a private/trusted network, a slightly-too-open port
-            was a smaller risk — the pool of people who could even attempt to reach it was already
-            limited. Once the backend is reachable from the open internet, the same small
-            misconfiguration means literally anyone could reach it, not just people your team
-            trusts. Always include the <code>127.0.0.1:</code> prefix in this command when the
-            remote server is internet-facing — it costs nothing and closes off a path into Burp
-            that has nothing to do with whether this app itself is secure.
+            <strong>Why it isn't exposed:</strong> the bridge address is not on the server's public
+            interface. Only the host and containers on that bridge can reach it. Keep{" "}
+            <code>GatewayPorts clientspecified</code> rather than <code>yes</code>: with{" "}
+            <code>yes</code>, sshd binds forwarded ports on every interface, including the public
+            one, and anyone who finds the server's address could reach Burp through the tunnel.
+          </p>
+          <p>
+            <strong>On macOS:</strong> Docker Desktop has no bridge address to bind to, but the same{" "}
+            <code>host.docker.internal:8080</code> proxy address works. Run{" "}
+            <code>ssh -N -R 8080:localhost:8080 user@host</code> against a local SSH server, as in
+            the local test steps.
           </p>
         </div>
       )}

@@ -9,6 +9,9 @@
 #   ./run.sh --frontend-port 3000           run the frontend on a custom port
 #   ./run.sh --expose                       bind the frontend to 0.0.0.0 (reachable from other machines)
 #   ./run.sh --expose --frontend-port 3000  expose the frontend on a custom port
+#   ./run.sh --prod --expose --frontend-port 8080
+#                                           production: build the frontend and serve the UI and
+#                                           /api from ONE process on ONE port (no Vite, no --reload)
 #
 # Env vars (overridden by the flags above): BACKEND_PORT, FRONTEND_PORT, HOST
 set -euo pipefail
@@ -24,9 +27,10 @@ BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 FRONTEND_HOST="${HOST:-localhost}"
 REBUILD_IMAGE=false
+PROD=false
 
 usage() {
-  sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -53,6 +57,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --expose)
       FRONTEND_HOST="0.0.0.0"
+      shift
+      ;;
+    --prod)
+      PROD=true
       shift
       ;;
     -h|--help)
@@ -104,6 +112,17 @@ if ! docker info >/dev/null 2>&1; then
 fi
 echo "[ok] Docker is running"
 
+# --- Docker Engine version (host-gateway needs 20.10+) ---
+MIN_DOCKER_VERSION="20.10"
+DOCKER_VERSION="$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo 0)"
+LOWEST="$(printf '%s\n%s\n' "$MIN_DOCKER_VERSION" "$DOCKER_VERSION" | sort -V | head -1)"
+if [[ "$LOWEST" != "$MIN_DOCKER_VERSION" ]]; then
+  echo "ERROR: Docker Engine $DOCKER_VERSION is too old. ApiDiscover needs $MIN_DOCKER_VERSION or newer."
+  echo "       Update Docker Desktop (macOS) or Docker Engine (Linux) and try again."
+  exit 1
+fi
+echo "[ok] Docker Engine $DOCKER_VERSION (>= $MIN_DOCKER_VERSION)"
+
 # --- VNC browser image ---
 if $REBUILD_IMAGE || ! docker image inspect "$VNC_IMAGE" >/dev/null 2>&1; then
   echo "Building $VNC_IMAGE image (this can take a couple of minutes the first time)..."
@@ -114,6 +133,7 @@ fi
 
 # --- Backend setup ---
 cd "$BACKEND_DIR"
+pwd
 if [[ ! -d ".venv" ]]; then
   echo "Creating backend virtualenv..."
   python3 -m venv .venv
@@ -142,6 +162,44 @@ if [[ ! -d "node_modules" ]]; then
   npm install --silent
 fi
 echo "[ok] Frontend dependencies ready"
+
+# --- Production: one process serves the built UI and /api on FRONTEND_PORT ---
+if $PROD; then
+  echo "Building frontend for production..."
+  if ! (cd "$FRONTEND_DIR" && npm run build) > "$LOG_DIR/frontend-build.log" 2>&1; then
+    echo "ERROR: frontend build failed. Check $LOG_DIR/frontend-build.log"
+    exit 1
+  fi
+  echo "[ok] Frontend built"
+
+  cd "$BACKEND_DIR"
+  source .venv/bin/activate
+  echo "Starting ApiDiscover on http://$FRONTEND_HOST:$FRONTEND_PORT ..."
+  if [[ "$FRONTEND_HOST" == "0.0.0.0" ]]; then
+    echo "  (exposed: reachable from other machines on your network)"
+  fi
+  FRONTEND_PORT="$FRONTEND_PORT" uvicorn app.main:app --host "$FRONTEND_HOST" --port "$FRONTEND_PORT" > "$LOG_DIR/backend.log" 2>&1 &
+  BACKEND_PID=$!
+
+  sleep 2
+  if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    echo "ERROR: server failed to start. Check $LOG_DIR/backend.log"
+    exit 1
+  fi
+
+  echo ""
+  echo "================================================"
+  echo " ApiDiscover is running (production):"
+  echo "   http://$FRONTEND_HOST:$FRONTEND_PORT"
+  echo ""
+  echo " Logs: $LOG_DIR/backend.log"
+  echo " Press Ctrl+C to stop."
+  echo "================================================"
+  echo ""
+
+  wait "$BACKEND_PID"
+  exit 0
+fi
 
 # --- Start backend ---
 cd "$BACKEND_DIR"

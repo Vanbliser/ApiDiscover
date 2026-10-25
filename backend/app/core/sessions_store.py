@@ -14,9 +14,9 @@ from app.core.models import CapturedRequest
 #   {id}/session.json     metadata + exclusions, rewritten in full (changes rarely)
 #   {id}/captured.jsonl   one CapturedRequest per line, append-only (changes per capture)
 #   {id}/profile/         Chrome's --user-data-dir, bind-mounted into the container
-# Unlike provider_config.enc, none of this is sensitive-at-rest by nature (it's the
-# user's own crawl traffic against their own target), so no encryption here — same
-# reasoning as proxy_ca.pem in config.py.
+# None of this is encrypted at rest: it's the user's own crawl traffic against
+# their own target, same reasoning as proxy_ca.pem in config.py. The profile
+# does hold cookies and login state, so treat the directory as sensitive.
 SESSIONS_ROOT = DATA_DIR / "sessions"
 
 

@@ -5,28 +5,6 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
-class SubdomainSource(str, Enum):
-    PASSIVE_CT = "passive_ct"
-    DNS_BRUTEFORCE = "dns_bruteforce"
-    THIRD_PARTY_API = "third_party_api"
-
-
-class SubdomainResult(BaseModel):
-    hostname: str
-    source: SubdomainSource
-    provider: str
-
-
-class LiveHost(BaseModel):
-    hostname: str
-    sources: list[str]
-    status_code: int | None = None
-    title: str | None = None
-    server_header: str | None = None
-    resolved_ips: list[str] = Field(default_factory=list)
-    reachable: bool = False
-
-
 class CapturedRequest(BaseModel):
     method: str
     url: str
@@ -74,9 +52,3 @@ class CrawlerStatus(str, Enum):
     STUCK_AWAITING_INPUT = "stuck_awaiting_input"
     FINISHED = "finished"
     ERROR = "error"
-
-
-class RunMode(str, Enum):
-    DOMAIN_RECON = "domain_recon"
-    APP_CRAWL = "app_crawl"
-    BOTH = "both"
