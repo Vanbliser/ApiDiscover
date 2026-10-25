@@ -135,7 +135,8 @@ function ProxySetupGuide() {
           <code>ssh -N -R 172.17.0.1:8080:localhost:8080 user@remote-backend-host</code>. Here{" "}
           <code>172.17.0.1</code> is the server's Docker bridge address (check it with{" "}
           <code>ip -4 addr show docker0</code>). This needs{" "}
-          <code>GatewayPorts clientspecified</code> in the server's sshd config.{" "}
+          <code>GatewayPorts clientspecified</code> in the server's sshd config. Note that{" "}
+          <code>172.17.0.1</code> works for only Linux remote host.{" "}
           <SshTunnelDetails />
         </li>
       </ul>
@@ -211,7 +212,9 @@ function SshTunnelDetails() {
             <strong>On macOS:</strong> Docker Desktop has no bridge address to bind to, but the same{" "}
             <code>host.docker.internal:8080</code> proxy address works. Run{" "}
             <code>ssh -N -R 8080:localhost:8080 user@host</code> against a local SSH server, as in
-            the local test steps.
+            the local test steps. For Windows remote host, you will have to run{" "}
+            <code>ipconfig</code> and look for the "vEthernet (WSL)", vEthernet (DockerNAT) 
+            or vEthernet (Default Switch) adapter's IPv4 address, and use that IP address
           </p>
         </div>
       )}

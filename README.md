@@ -1,7 +1,7 @@
 # ApiDiscover
 
 An API endpoint discovery tool built for an **external, attacker's-eye view** of your
-application. It finds the endpoints that ypur applications calls and packages them into an OpenAPI spec and a Postman
+application. It finds the endpoints that your applications calls and packages them into an OpenAPI spec and a Postman
 collection.
 
 The app is built around one mode, **App Crawl**: given a single web app URL,
